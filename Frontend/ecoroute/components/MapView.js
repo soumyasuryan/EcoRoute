@@ -191,22 +191,28 @@ export default function MapView({
     return '#38bdf8'; // Sky Blue for Fastest
   };
 
-  // Clean up Leaflet DOM container state during HMR/re-renders
+  // Ensure clean client-side mount lifecycle without DOM element reuse collisions
+  const [mounted, setMounted] = useState(false);
+
   useEffect(() => {
+    setMounted(true);
     return () => {
-      if (typeof document !== 'undefined') {
-        const container = document.getElementById('ecoroute-map-container');
-        if (container) {
-          container._leaflet_id = null;
-        }
-      }
+      setMounted(false);
     };
   }, []);
+
+  if (!mounted) {
+    return (
+      <div className="relative w-full h-full min-h-[540px] rounded-2xl overflow-hidden glass-panel border-slate-800/80 bg-slate-950 flex flex-col items-center justify-center gap-3 text-slate-500">
+        <div className="w-8 h-8 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+        <span className="text-xs font-mono">Initializing Delhi NCR Canvas...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="relative w-full h-full min-h-[540px] rounded-2xl overflow-hidden glass-panel border-slate-800/80 bg-slate-950">
       <MapContainer
-        id="ecoroute-map-container"
         center={delhiCenter}
         zoom={11}
         scrollWheelZoom={true}
