@@ -191,6 +191,70 @@ export const ROAD_PAIRS = [
   ['Noida Sector 18', 'Preet Vihar']
 ];
 
+// Baseline realistic winter AQI tiers per neighborhood:
+// - Normal (<200)
+// - Elevated (200-400)
+// - Severe (>400)
+export const NODE_AQI_DEFAULTS = {
+  // Severe (>400) - 8 major industrial & heavy-traffic hotspots
+  'Anand Vihar Cargo Terminal': 445,
+  'Shahdara': 430,
+  'Burari': 425,
+  'Paharganj': 440,
+  'Punjabi Bagh': 420,
+  'Sarita Vihar': 410,
+  'Indirapuram': 435,
+  'Patparganj': 425,
+
+  // Normal (<200) - 12 green, residential, ridge & diplomatic zones
+  'Chanakyapuri': 135,
+  'Civil Lines': 165,
+  'Hauz Khas': 170,
+  'Saket': 180,
+  'Greater Kailash': 175,
+  'Vasant Kunj': 155,
+  'Defence Colony': 160,
+  'Mehrauli': 145,
+  'Green Park': 175,
+  'Dwarka Sector 21 Gateway': 160,
+  'Dwarka': 175,
+  'Rohini': 185,
+
+  // Elevated (200-400) - 30 commercial, sub-arterial & residential hubs
+  'Chandni Chowk': 365,
+  'Connaught Place': 285,
+  'Karol Bagh': 340,
+  'Patel Nagar': 310,
+  'Moti Nagar': 325,
+  'Lajpat Nagar': 270,
+  'Nehru Place': 320,
+  'Malviya Nagar': 240,
+  'Chittaranjan Park': 230,
+  'Janakpuri': 260,
+  'Rajouri Garden': 315,
+  'Paschim Vihar': 290,
+  'Vikaspuri': 250,
+  'Tilak Nagar': 280,
+  'Uttam Nagar': 330,
+  'Pitampura': 270,
+  'Model Town': 310,
+  'Shalimar Bagh': 290,
+  'Ashok Vihar': 330,
+  'Mayur Vihar': 340,
+  'Laxmi Nagar': 360,
+  'Preet Vihar': 340,
+  'Dilshad Garden': 350,
+  'Noida Sector 18': 280,
+  'Noida Sector 62': 340,
+  'Vaishali': 320,
+  'Kaushambi': 310,
+  'Faridabad NIT': 330,
+  'Old Faridabad': 315,
+  'Alipur North Hub': 280,
+  'Okhla Logistics Park': 310,
+  'Gurgaon Cyber City Hub': 240
+};
+
 /**
  * Seed the Neo4j AuraDB with all 50 neighborhoods and arterial road network
  */
@@ -209,8 +273,16 @@ export async function seedDatabase() {
     const nodeMap = new Map();
 
     for (const n of NEIGHBORHOODS) {
-      // Normal winter baseline: 120-280; occasionally higher
-      const initialAqi = Math.floor(Math.random() * (260 - 130 + 1)) + 130;
+      const defaultAqi = NODE_AQI_DEFAULTS[n.name];
+      const initialAqi = defaultAqi !== undefined
+        ? defaultAqi
+        : Math.floor(Math.random() * (350 - 230 + 1)) + 230; // Elevated tier: 230-350
+
+      const initialHistory = [
+        Math.round(initialAqi * 0.88),
+        Math.round(initialAqi * 0.94),
+        initialAqi
+      ];
       nodeMap.set(n.name, n);
 
       await session.run(
@@ -220,7 +292,7 @@ export async function seedDatabase() {
           lat: $lat,
           lon: $lon,
           aqi: $aqi,
-          aqiHistory: [],
+          aqiHistory: $aqiHistory,
           isWarehouse: $isWarehouse,
           zone: $zone
         })
@@ -234,19 +306,21 @@ export async function seedDatabase() {
           lat: n.lat,
           lon: n.lon,
           aqi: initialAqi,
+          aqiHistory: initialHistory,
           isWarehouse: n.isWarehouse,
           zone: n.zone || 'Delhi NCR'
         }
       ).catch(async () => {
         // Fallback without apoc
         const labelQuery = n.isWarehouse
-          ? `CREATE (n:Neighborhood:Warehouse { name: $name, lat: $lat, lon: $lon, aqi: $aqi, aqiHistory: [], isWarehouse: true, zone: $zone })`
-          : `CREATE (n:Neighborhood { name: $name, lat: $lat, lon: $lon, aqi: $aqi, aqiHistory: [], isWarehouse: false, zone: $zone })`;
+          ? `CREATE (n:Neighborhood:Warehouse { name: $name, lat: $lat, lon: $lon, aqi: $aqi, aqiHistory: $aqiHistory, isWarehouse: true, zone: $zone })`
+          : `CREATE (n:Neighborhood { name: $name, lat: $lat, lon: $lon, aqi: $aqi, aqiHistory: $aqiHistory, isWarehouse: false, zone: $zone })`;
         await session.run(labelQuery, {
           name: n.name,
           lat: n.lat,
           lon: n.lon,
           aqi: initialAqi,
+          aqiHistory: initialHistory,
           zone: n.zone || 'Delhi NCR'
         });
       });

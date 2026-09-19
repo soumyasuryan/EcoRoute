@@ -221,7 +221,16 @@ export default function Controls({
           </div>
           <p className="text-[11px] text-slate-400 mt-1.5 leading-snug">
             {mode === 'fastest' && 'Direct arterial transit minimizing driving distance.'}
-            {mode === 'eco-safe' && 'Strictly excludes zones exceeding AQI 400.'}
+            {mode === 'eco-safe' && (
+              <>
+                Strictly excludes zones exceeding AQI 400.
+                {previewRoute && (previewRoute.bypassedCount === 0 || previewRoute.bypassedCount == null) && (
+                  <span className="block text-[10px] text-emerald-400/90 mt-0.5 font-medium">
+                    ✓ All nodes along corridor are currently under 400 AQI (corridor is already safe).
+                  </span>
+                )}
+              </>
+            )}
             {mode === 'risk-weighted' && 'Mathematical balance between mileage and rider AQI exposure.'}
           </p>
         </div>

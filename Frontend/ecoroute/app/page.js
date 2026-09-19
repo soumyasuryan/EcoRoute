@@ -268,6 +268,20 @@ export default function EcoRouteDashboard() {
     }
   };
 
+  const handleRiderChange = (newRiderId) => {
+    setSelectedRiderId(newRiderId);
+    if (currentRoute) {
+      calculateRoute(source, target, mode, alpha, maxDeliveryMinutes, newRiderId, false);
+    }
+  };
+
+  const handleMaxDeliveryMinutesChange = (newMinutes) => {
+    setMaxDeliveryMinutes(newMinutes);
+    if (currentRoute && mode === 'risk-weighted') {
+      calculateRoute(source, target, mode, alpha, newMinutes, selectedRiderId, false);
+    }
+  };
+
   // When compare mode is toggled, clear the other mode's result
   const handleCompareModeToggle = (val) => {
     setCompareMode(val);
@@ -458,9 +472,9 @@ export default function EcoRouteDashboard() {
                 loadingCompare={loadingCompare}
                 riders={riders}
                 selectedRiderId={selectedRiderId}
-                setSelectedRiderId={setSelectedRiderId}
+                setSelectedRiderId={handleRiderChange}
                 maxDeliveryMinutes={maxDeliveryMinutes}
-                setMaxDeliveryMinutes={setMaxDeliveryMinutes}
+                setMaxDeliveryMinutes={handleMaxDeliveryMinutesChange}
                 previewRoute={currentRoute}
                 onCommitRoute={handleCommitRoute}
                 loadingCommit={loadingCommit}
