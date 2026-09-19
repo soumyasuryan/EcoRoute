@@ -237,16 +237,16 @@ export default function MetricsPanel({
               <>
                 <div className="font-semibold text-rose-300">SLA cannot be met — fastest route selected</div>
                 <div className="mt-0.5 text-rose-200/80">
-                  Even the fastest route ({currentRoute.estimatedMinutes} min) exceeds your deadline.
+                  Fastest route takes {currentRoute.estimatedMinutes} min, which exceeds your {currentRoute.targetMinutes ? `${currentRoute.targetMinutes} min ` : ''}deadline.
                 </div>
               </>
             ) : (
               <>
                 <div className="font-semibold text-amber-300">
-                  SLA met via relaxed alpha (α = {currentRoute.effectiveAlpha})
+                  SLA met via auto-relaxed alpha (α = {currentRoute.effectiveAlpha})
                 </div>
                 <div className="mt-0.5 text-amber-200/80">
-                  Estimated {currentRoute.estimatedMinutes} min. Pollution penalty reduced to meet deadline.
+                  Estimated transit: <strong>{currentRoute.estimatedMinutes} min</strong> (within {currentRoute.targetMinutes ? `${currentRoute.targetMinutes} min ` : ''}deadline). Pollution penalty lowered to satisfy SLA.
                 </div>
               </>
             )}

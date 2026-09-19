@@ -503,9 +503,9 @@ export async function computeSlaAwareRoute({
     };
   }
 
-  // 2. Step alpha down by 0.2 at a time
-  while (curAlpha > 0.05) {
-    curAlpha = Math.round((curAlpha - 0.2) * 10) / 10;
+  // 2. Step alpha down by 0.1 at a time for finer SLA precision
+  while (curAlpha > 0.01) {
+    curAlpha = Math.round((curAlpha - 0.1) * 100) / 100;
     if (curAlpha < 0) curAlpha = 0;
 
     const res = await computeShortestPath({
@@ -523,7 +523,8 @@ export async function computeSlaAwareRoute({
           effectiveAlpha: curAlpha,
           slaRelaxed: true,
           slaAchievable: true,
-          estimatedMinutes: estMins
+          estimatedMinutes: estMins,
+          targetMinutes
         };
       }
     }
@@ -531,7 +532,7 @@ export async function computeSlaAwareRoute({
     if (curAlpha === 0) break;
   }
 
-  // 3. If still not met at alpha = 0, fall back to plain "fastest"
+  // 3. Fall back to plain "fastest" route
   const fastestResult = await computeShortestPath({
     source,
     target,
@@ -542,11 +543,14 @@ export async function computeSlaAwareRoute({
     ? Math.round((fastestResult.totalDistance / avgSpeedKmph) * 60 * 10) / 10
     : null;
 
+  const isAchievable = fastestEstimatedMinutes != null && fastestEstimatedMinutes <= targetMinutes;
+
   return {
     ...fastestResult,
-    effectiveAlpha: null,
+    effectiveAlpha: isAchievable ? 0.0 : null,
     slaRelaxed: true,
-    slaAchievable: false,
-    estimatedMinutes: fastestEstimatedMinutes
+    slaAchievable: isAchievable,
+    estimatedMinutes: fastestEstimatedMinutes,
+    targetMinutes
   };
 }
