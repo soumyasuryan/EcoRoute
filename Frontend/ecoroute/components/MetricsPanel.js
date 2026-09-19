@@ -74,9 +74,9 @@ export default function MetricsPanel({
 
     const { fastest, ecoSafe, riskWeighted } = comparisonResult;
     const rows = [
-      { label: 'Fastest', key: 'fastest', data: fastest, dotColor: '#64748b' },
+      { label: 'Fastest', key: 'fastest', data: fastest, dotColor: '#ef4444' },
       { label: 'Eco-Safe', key: 'ecoSafe', data: ecoSafe, dotColor: '#10b981' },
-      { label: 'Risk-Weighted', key: 'riskWeighted', data: riskWeighted, dotColor: '#3b82f6' }
+      { label: 'Risk-Calibrated', key: 'riskWeighted', data: riskWeighted, dotColor: '#8b5cf6' }
     ];
 
     // Find best values for highlighting

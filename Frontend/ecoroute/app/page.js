@@ -152,27 +152,36 @@ export default function EcoRouteDashboard() {
 
   // ── Compare mode calculation ───────────────────────────────────────────────
 
+  const handleCompareWith = useCallback(
+    async (src = source, tgt = target, currentAlpha = alpha, showToastMsg = true) => {
+      if (!src || !tgt) return;
+      setLoadingCompare(true);
+      try {
+        const res = await fetch('/api/compare', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source: src, target: tgt, alpha: currentAlpha })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to compare routes');
+        setComparisonResult(data);
+        await fetchHighRiskNodes();
+        if (showToastMsg) {
+          showToast('All 3 modes compared', 'border-blue-500');
+        }
+      } catch (err) {
+        console.error('Compare error:', err);
+        showToast(err.message || 'Comparison failed', 'border-red-500');
+      } finally {
+        setLoadingCompare(false);
+      }
+    },
+    [source, target, alpha, fetchHighRiskNodes, showToast]
+  );
+
   const handleCompare = useCallback(async () => {
-    if (!source || !target) return;
-    setLoadingCompare(true);
-    try {
-      const res = await fetch('/api/compare', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source, target, alpha })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to compare routes');
-      setComparisonResult(data);
-      await fetchHighRiskNodes();
-      showToast('All 3 modes compared', 'border-blue-500');
-    } catch (err) {
-      console.error('Compare error:', err);
-      showToast(err.message || 'Comparison failed', 'border-red-500');
-    } finally {
-      setLoadingCompare(false);
-    }
-  }, [source, target, alpha, fetchHighRiskNodes, showToast]);
+    await handleCompareWith(source, target, alpha, true);
+  }, [handleCompareWith, source, target, alpha]);
 
   // ── Commit route to rider ─────────────────────────────────────────────────
 
@@ -234,12 +243,12 @@ export default function EcoRouteDashboard() {
     return () => { isMounted = false; };
   }, [fetchNeighborhoods, fetchHighRiskNodes, fetchRiders]);
 
-  // ── Auto-recalculate on input change (only if route already calculated) ───
+  // ── Auto-recalculate on input change ─────────────────────────────────────────
 
   const handleSourceChange = (newSource) => {
     setSource(newSource);
     if (compareMode) {
-      if (comparisonResult) setComparisonResult(null);
+      handleCompareWith(newSource, target, alpha, false);
     } else if (currentRoute) {
       calculateRoute(newSource, target, mode, alpha, maxDeliveryMinutes, selectedRiderId, true);
     }
@@ -248,7 +257,7 @@ export default function EcoRouteDashboard() {
   const handleTargetChange = (newTarget) => {
     setTarget(newTarget);
     if (compareMode) {
-      if (comparisonResult) setComparisonResult(null);
+      handleCompareWith(source, newTarget, alpha, false);
     } else if (currentRoute) {
       calculateRoute(source, newTarget, mode, alpha, maxDeliveryMinutes, selectedRiderId, true);
     }
@@ -263,8 +272,10 @@ export default function EcoRouteDashboard() {
 
   const handleAlphaChange = (newAlpha) => {
     setAlpha(newAlpha);
-    if (currentRoute) {
-      calculateRoute(source, target, mode, newAlpha, maxDeliveryMinutes, selectedRiderId, true);
+    if (compareMode) {
+      handleCompareWith(source, target, newAlpha, false);
+    } else if (currentRoute || (source && target)) {
+      calculateRoute(source, target, mode, newAlpha, maxDeliveryMinutes, selectedRiderId, false);
     }
   };
 
@@ -282,13 +293,17 @@ export default function EcoRouteDashboard() {
     }
   };
 
-  // When compare mode is toggled, clear the other mode's result
+  // When compare mode is toggled, auto-trigger compare immediately!
   const handleCompareModeToggle = (val) => {
     setCompareMode(val);
     if (val) {
       setCurrentRoute(null);
+      handleCompareWith(source, target, alpha, true);
     } else {
       setComparisonResult(null);
+      if (source && target) {
+        calculateRoute(source, target, mode, alpha, maxDeliveryMinutes, selectedRiderId, false);
+      }
     }
   };
 

@@ -85,6 +85,9 @@ export async function POST(request) {
       }
     }
 
+    result.alpha = parseFloat(alpha) || 1.0;
+    result.mode = mode;
+
     return NextResponse.json(result);
   } catch (error) {
     console.error('Error in POST /api/route:', error);

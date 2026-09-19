@@ -58,9 +58,9 @@ function MultiRouteBounds({ allCoords }) {
 
 // Compare mode polyline colors & styles
 const COMPARE_STYLES = {
-  fastest: { color: '#64748b', dashArray: null, label: 'Fastest' },
-  ecoSafe: { color: '#10b981', dashArray: '6 3', label: 'Eco-Safe' },
-  riskWeighted: { color: '#3b82f6', dashArray: null, label: 'Risk-Weighted' }
+  fastest: { color: '#ef4444', weight: 4.5, dashArray: null, label: 'Fastest' },
+  ecoSafe: { color: '#10b981', weight: 4.5, dashArray: null, label: 'Eco-Safe' },
+  riskWeighted: { color: '#8b5cf6', weight: 4.5, dashArray: '6 4', label: 'Risk-Calibrated' }
 };
 
 export default function MapView({
@@ -91,99 +91,158 @@ export default function MapView({
   const sourceCoord = coordMap.get(sourceName);
   const targetCoord = coordMap.get(targetName);
 
-  const [fetchedGeometry, setFetchedGeometry] = useState([]);
+  // Single route geometry state
+  const [singleRoadCoords, setSingleRoadCoords] = useState([]);
 
-  // Fetch actual OSRM road geometry for single-route mode
-  const activeGeometry = useMemo(() => {
-    if (!currentRoute?.path || !sourceCoord || !targetCoord || sourceName === targetName) {
-      return [];
-    }
-    const cacheKey = `${sourceName}->${targetName}-${mode}-${currentRoute?.alpha || 1.0}`;
-    if (roadGeometryCache.has(cacheKey)) {
-      return roadGeometryCache.get(cacheKey);
-    }
-    return fetchedGeometry.length > 0 ? fetchedGeometry : [sourceCoord, targetCoord];
-  }, [currentRoute?.path, currentRoute?.alpha, sourceCoord, targetCoord, sourceName, targetName, mode, fetchedGeometry]);
+  // Compare mode geometries state
+  const [compareRoadGeometries, setCompareRoadGeometries] = useState({
+    fastest: null,
+    ecoSafe: null,
+    riskWeighted: null
+  });
 
+  // Extract raw waypoint coordinates for current route
+  const currentPathWaypoints = useMemo(() => {
+    if (!currentRoute?.path || currentRoute.path.length < 2) return [];
+    return currentRoute.path.map((name) => coordMap.get(name)).filter(Boolean);
+  }, [currentRoute?.path, coordMap]);
+
+  // Fetch real road geometry for single route along its actual graph waypoints
   useEffect(() => {
-    if (!currentRoute?.path || !sourceCoord || !targetCoord || sourceName === targetName) {
+    if (compareMode || currentPathWaypoints.length < 2) {
+      setSingleRoadCoords([]);
       return;
     }
-    const cacheKey = `${sourceName}->${targetName}-${mode}-${currentRoute?.alpha || 1.0}`;
+
+    const coordsStr = currentPathWaypoints.map(([lat, lon]) => `${lon},${lat}`).join(';');
+    const cacheKey = `single-${coordsStr}`;
+
     if (roadGeometryCache.has(cacheKey)) {
+      setSingleRoadCoords(roadGeometryCache.get(cacheKey));
       return;
     }
-    const url = `https://router.project-osrm.org/route/v1/driving/${sourceCoord[1]},${sourceCoord[0]};${targetCoord[1]},${targetCoord[0]}?overview=full&geometries=geojson&alternatives=true`;
+
     let isCancelled = false;
+    const url = `https://router.project-osrm.org/route/v1/driving/${coordsStr}?overview=full&geometries=geojson`;
 
     fetch(url)
       .then((res) => res.json())
       .then((data) => {
-        if (isCancelled || data.code !== 'Ok' || !data.routes || data.routes.length === 0) return;
-
-        const candidateRoutes = data.routes;
-        let chosenRoute = candidateRoutes[0];
-
-        if (candidateRoutes.length > 1 && mode !== 'fastest') {
-          const scoredRoutes = candidateRoutes.map((route) => {
-            const coords = route.geometry.coordinates;
-            let totalAqi = 0;
-            let maxAqi = 0;
-            const step = Math.max(1, Math.floor(coords.length / 30));
-            let samples = 0;
-
-            for (let i = 0; i < coords.length; i += step) {
-              const [lon, lat] = coords[i];
-              let minDistSq = Infinity;
-              let localAqi = 150;
-
-              for (const n of neighborhoods) {
-                const distSq = (n.lat - lat) ** 2 + (n.lon - lon) ** 2;
-                if (distSq < minDistSq) {
-                  minDistSq = distSq;
-                  localAqi = n.aqi;
-                }
-              }
-
-              totalAqi += localAqi;
-              if (localAqi > maxAqi) maxAqi = localAqi;
-              samples++;
-            }
-
-            const avgAqi = samples > 0 ? totalAqi / samples : 150;
-            const distKm = route.distance / 1000;
-            return { route, avgAqi, maxAqi, distKm };
-          });
-
-          if (mode === 'eco-safe') {
-            scoredRoutes.sort((a, b) => {
-              if (a.maxAqi !== b.maxAqi) return a.maxAqi - b.maxAqi;
-              return a.avgAqi - b.avgAqi;
-            });
-            chosenRoute = scoredRoutes[0].route;
-          } else if (mode === 'risk-weighted') {
-            const alphaVal = Number(currentRoute?.alpha) || 1.0;
-            scoredRoutes.sort((a, b) => {
-              const costA = a.distKm + (alphaVal * a.avgAqi) / 100;
-              const costB = b.distKm + (alphaVal * b.avgAqi) / 100;
-              return costA - costB;
-            });
-            chosenRoute = scoredRoutes[0].route;
-          }
-        }
-
-        if (chosenRoute?.geometry?.coordinates && !isCancelled) {
-          const realRoadCoords = chosenRoute.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
-          roadGeometryCache.set(cacheKey, realRoadCoords);
-          setFetchedGeometry(realRoadCoords);
+        if (isCancelled) return;
+        if (data.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
+          const roadCoords = data.routes[0].geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+          roadGeometryCache.set(cacheKey, roadCoords);
+          setSingleRoadCoords(roadCoords);
+        } else {
+          setSingleRoadCoords(currentPathWaypoints);
         }
       })
       .catch((err) => {
-        console.warn('OSRM road geometry fetch fallback:', err);
+        if (!isCancelled) {
+          console.warn('OSRM road geometry fallback to waypoints:', err);
+          setSingleRoadCoords(currentPathWaypoints);
+        }
       });
 
-    return () => { isCancelled = true; };
-  }, [sourceName, targetName, mode, currentRoute, neighborhoods, sourceCoord, targetCoord]);
+    return () => {
+      isCancelled = true;
+    };
+  }, [compareMode, currentPathWaypoints]);
+
+  // Fetch real road geometry for each of the 3 compare routes
+  useEffect(() => {
+    if (!compareMode || !comparisonResult) {
+      setCompareRoadGeometries({ fastest: null, ecoSafe: null, riskWeighted: null });
+      return;
+    }
+
+    let isCancelled = false;
+    const modes = [
+      { key: 'fastest', data: comparisonResult.fastest },
+      { key: 'ecoSafe', data: comparisonResult.ecoSafe },
+      { key: 'riskWeighted', data: comparisonResult.riskWeighted }
+    ];
+
+    modes.forEach(({ key, data }) => {
+      if (!data?.path || data.path.length < 2) {
+        if (!isCancelled) {
+          setCompareRoadGeometries((prev) => ({ ...prev, [key]: null }));
+        }
+        return;
+      }
+
+      const waypoints = data.path.map((name) => coordMap.get(name)).filter(Boolean);
+      if (waypoints.length < 2) return;
+
+      const coordsStr = waypoints.map(([lat, lon]) => `${lon},${lat}`).join(';');
+      const cacheKey = `compare-${key}-${coordsStr}`;
+
+      if (roadGeometryCache.has(cacheKey)) {
+        if (!isCancelled) {
+          setCompareRoadGeometries((prev) => ({
+            ...prev,
+            [key]: roadGeometryCache.get(cacheKey)
+          }));
+        }
+        return;
+      }
+
+      const url = `https://router.project-osrm.org/route/v1/driving/${coordsStr}?overview=full&geometries=geojson`;
+
+      fetch(url)
+        .then((res) => res.json())
+        .then((resp) => {
+          if (isCancelled) return;
+          if (resp.code === 'Ok' && resp.routes?.[0]?.geometry?.coordinates) {
+            const roadCoords = resp.routes[0].geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+            roadGeometryCache.set(cacheKey, roadCoords);
+            setCompareRoadGeometries((prev) => ({ ...prev, [key]: roadCoords }));
+          } else {
+            setCompareRoadGeometries((prev) => ({ ...prev, [key]: waypoints }));
+          }
+        })
+        .catch(() => {
+          if (!isCancelled) {
+            setCompareRoadGeometries((prev) => ({ ...prev, [key]: waypoints }));
+          }
+        });
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [compareMode, comparisonResult, coordMap]);
+
+  // Active single-route geometry
+  const activeGeometry = useMemo(() => {
+    if (singleRoadCoords.length > 0) return singleRoadCoords;
+    return currentPathWaypoints;
+  }, [singleRoadCoords, currentPathWaypoints]);
+
+  // Compare mode active geometries
+  const activeCompareGeometries = useMemo(() => {
+    if (!compareMode || !comparisonResult) return {};
+    return {
+      fastest: compareRoadGeometries.fastest || (comparisonResult.fastest?.path ? comparisonResult.fastest.path.map((n) => coordMap.get(n)).filter(Boolean) : null),
+      ecoSafe: compareRoadGeometries.ecoSafe || (comparisonResult.ecoSafe?.path ? comparisonResult.ecoSafe.path.map((n) => coordMap.get(n)).filter(Boolean) : null),
+      riskWeighted: compareRoadGeometries.riskWeighted || (comparisonResult.riskWeighted?.path ? comparisonResult.riskWeighted.path.map((n) => coordMap.get(n)).filter(Boolean) : null)
+    };
+  }, [compareMode, comparisonResult, compareRoadGeometries, coordMap]);
+
+  const allCompareCoords = useMemo(() => {
+    return Object.values(activeCompareGeometries).filter(Boolean).flat();
+  }, [activeCompareGeometries]);
+
+  // Which nodes are on any compare route
+  const compareRouteNodes = useMemo(() => {
+    if (!compareMode || !comparisonResult) return new Set();
+    const s = new Set();
+    ['fastest', 'ecoSafe', 'riskWeighted'].forEach((k) => {
+      const data = comparisonResult[k];
+      data?.path?.forEach((n) => s.add(n));
+    });
+    return s;
+  }, [compareMode, comparisonResult]);
 
   // AQI color palette
   const getAqiColor = (aqi) => {
@@ -197,44 +256,6 @@ export default function MapView({
     if (aqi <= 400) return { label: 'Elevated (200-400)', color: '#f59e0b' };
     return { label: 'Severe (>400)', color: '#ef4444' };
   };
-
-  // Build compare mode geometries using straight-line fallback between route node coords
-  // NOTE: all useMemo hooks must be declared before any early returns
-  const compareGeometries = useMemo(() => {
-    if (!compareMode || !comparisonResult) return {};
-    const result = {};
-    const keys = [
-      { key: 'fastest', data: comparisonResult.fastest },
-      { key: 'ecoSafe', data: comparisonResult.ecoSafe },
-      { key: 'riskWeighted', data: comparisonResult.riskWeighted }
-    ];
-    for (const { key, data } of keys) {
-      if (data?.path && data.path.length > 1) {
-        const coords = data.path
-          .map((name) => coordMap.get(name))
-          .filter(Boolean);
-        result[key] = coords;
-      } else {
-        result[key] = null;
-      }
-    }
-    return result;
-  }, [compareMode, comparisonResult, coordMap]);
-
-  const allCompareCoords = useMemo(() => {
-    return Object.values(compareGeometries).filter(Boolean).flat();
-  }, [compareGeometries]);
-
-  // Which nodes are on any compare route
-  const compareRouteNodes = useMemo(() => {
-    if (!compareMode || !comparisonResult) return new Set();
-    const s = new Set();
-    ['fastest', 'ecoSafe', 'riskWeighted'].forEach((k) => {
-      const data = comparisonResult[k === 'ecoSafe' ? 'ecoSafe' : k];
-      data?.path?.forEach((n) => s.add(n));
-    });
-    return s;
-  }, [compareMode, comparisonResult]);
 
   if (!isClient) {
     return (
@@ -282,17 +303,17 @@ export default function MapView({
         {/* === COMPARE MODE: 3 polylines === */}
         {compareMode && (
           <>
-            {Object.entries(compareGeometries).map(([key, coords]) => {
+            {Object.entries(activeCompareGeometries).map(([key, coords]) => {
               if (!coords || coords.length < 2) return null;
-              const style = COMPARE_STYLES[key];
+              const style = COMPARE_STYLES[key] || { color: '#3b82f6', weight: 4 };
               return (
                 <Polyline
                   key={`compare-${key}`}
                   positions={coords}
                   pathOptions={{
                     color: style.color,
-                    weight: key === 'fastest' ? 3 : 4,
-                    opacity: 0.85,
+                    weight: style.weight || (key === 'fastest' ? 3.5 : 4.5),
+                    opacity: 0.9,
                     dashArray: style.dashArray
                   }}
                 />
