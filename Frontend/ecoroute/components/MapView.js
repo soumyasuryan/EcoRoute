@@ -101,154 +101,166 @@ export default function MapView({
     riskWeighted: null
   });
 
-  // Helper to score an OSRM route geometry against spatial neighborhood AQI
-  const scoreRouteGeometry = useCallback(
-    (routeGeom) => {
-      const coords = routeGeom.coordinates || [];
-      if (coords.length === 0) return { avgAqi: 150, maxAqi: 150, distKm: (routeGeom.distance || 0) / 1000 };
+  // Helper to fetch and stitch real road geometries for a graph path
+  const fetchPathRoadGeometry = useCallback(
+    async (pathNodes) => {
+      if (!pathNodes || pathNodes.length < 2) return [];
 
-      let totalAqi = 0;
-      let maxAqi = 0;
-      const step = Math.max(1, Math.floor(coords.length / 40));
-      let samples = 0;
+      const coords = pathNodes.map((name) => coordMap.get(name)).filter(Boolean);
+      if (coords.length < 2) return coords;
 
-      for (let i = 0; i < coords.length; i += step) {
-        const [lon, lat] = coords[i];
-        let minDistSq = Infinity;
-        let localAqi = 150;
+      const fullRoadPoints = [];
 
-        for (const n of neighborhoods) {
-          const distSq = (n.lat - lat) ** 2 + (n.lon - lon) ** 2;
-          if (distSq < minDistSq) {
-            minDistSq = distSq;
-            localAqi = n.aqi;
+      for (let i = 0; i < coords.length - 1; i++) {
+        const c1 = coords[i];
+        const c2 = coords[i + 1];
+        const legKey = `leg-${c1[0].toFixed(4)},${c1[1].toFixed(4)}->${c2[0].toFixed(4)},${c2[1].toFixed(4)}`;
+
+        if (roadGeometryCache.has(legKey)) {
+          const cachedLeg = roadGeometryCache.get(legKey);
+          if (i === 0) {
+            fullRoadPoints.push(...cachedLeg);
+          } else {
+            fullRoadPoints.push(...cachedLeg.slice(1));
+          }
+          continue;
+        }
+
+        try {
+          const url = `https://router.project-osrm.org/route/v1/driving/${c1[1]},${c1[0]};${c2[1]},${c2[0]}?overview=full&geometries=geojson`;
+          const res = await fetch(url);
+          const data = await res.json();
+
+          if (data.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
+            const legCoords = data.routes[0].geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+            roadGeometryCache.set(legKey, legCoords);
+            if (i === 0) {
+              fullRoadPoints.push(...legCoords);
+            } else {
+              fullRoadPoints.push(...legCoords.slice(1));
+            }
+          } else {
+            const fallbackLeg = [c1, c2];
+            roadGeometryCache.set(legKey, fallbackLeg);
+            if (i === 0) {
+              fullRoadPoints.push(...fallbackLeg);
+            } else {
+              fullRoadPoints.push(...fallbackLeg.slice(1));
+            }
+          }
+        } catch {
+          const fallbackLeg = [c1, c2];
+          if (i === 0) {
+            fullRoadPoints.push(...fallbackLeg);
+          } else {
+            fullRoadPoints.push(...fallbackLeg.slice(1));
           }
         }
-
-        totalAqi += localAqi;
-        if (localAqi > maxAqi) maxAqi = localAqi;
-        samples++;
       }
 
-      const avgAqi = samples > 0 ? totalAqi / samples : 150;
-      const distKm = (routeGeom.distance || 0) / 1000;
-      return { avgAqi, maxAqi, distKm };
+      return fullRoadPoints;
     },
-    [neighborhoods]
+    [coordMap]
   );
 
-  // Fetch real practical road corridors between Origin and Destination
+  // 1. Single-Route Mode: fetch road geometry along graph computed path
   useEffect(() => {
-    if (!sourceCoord || !targetCoord || sourceName === targetName) {
+    if (compareMode || !currentRoute?.path || currentRoute.path.length < 2) {
       setSingleRoadCoords([]);
-      setCompareRoadGeometries({ fastest: null, ecoSafe: null, riskWeighted: null });
       return;
     }
 
-    const cacheKey = `od-${sourceName}-${targetName}`;
     let isCancelled = false;
+    const pathKey = `single-path-${currentRoute.path.join('->')}`;
 
-    const computeAndApplyRoutes = (candidateRoutes) => {
-      if (!candidateRoutes || candidateRoutes.length === 0) return;
-
-      const scored = candidateRoutes.map((r) => {
-        const stats = scoreRouteGeometry(r.geometry);
-        const roadCoords = r.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
-        return { route: r, roadCoords, ...stats };
-      });
-
-      // 1. Fastest: strictly shortest distance
-      const fastestChoice = [...scored].sort((a, b) => a.distKm - b.distKm)[0];
-
-      // 2. Eco-Safe: strictly avoids >400 severe hotspots, lowest peak AQI
-      const ecoSafeChoice = [...scored].sort((a, b) => {
-        if (a.maxAqi !== b.maxAqi) return a.maxAqi - b.maxAqi;
-        return a.avgAqi - b.avgAqi;
-      })[0];
-
-      // 3. Risk-Calibrated: balanced cost with alpha
-      const alphaVal = Number(currentRoute?.alpha) || 1.0;
-      const riskChoice = [...scored].sort((a, b) => {
-        const costA = a.distKm + (alphaVal * a.avgAqi) / 100;
-        const costB = b.distKm + (alphaVal * b.avgAqi) / 100;
-        return costA - costB;
-      })[0];
-
-      if (isCancelled) return;
-
-      // Set compare mode geometries
-      setCompareRoadGeometries({
-        fastest: fastestChoice?.roadCoords || [sourceCoord, targetCoord],
-        ecoSafe: ecoSafeChoice?.roadCoords || [sourceCoord, targetCoord],
-        riskWeighted: riskChoice?.roadCoords || [sourceCoord, targetCoord]
-      });
-
-      // Set active single route geometry based on current mode
-      if (mode === 'fastest') {
-        setSingleRoadCoords(fastestChoice?.roadCoords || [sourceCoord, targetCoord]);
-      } else if (mode === 'eco-safe') {
-        setSingleRoadCoords(ecoSafeChoice?.roadCoords || [sourceCoord, targetCoord]);
-      } else {
-        setSingleRoadCoords(riskChoice?.roadCoords || [sourceCoord, targetCoord]);
-      }
-    };
-
-    if (roadGeometryCache.has(cacheKey)) {
-      computeAndApplyRoutes(roadGeometryCache.get(cacheKey));
+    if (roadGeometryCache.has(pathKey)) {
+      setSingleRoadCoords(roadGeometryCache.get(pathKey));
       return;
     }
 
-    const url = `https://router.project-osrm.org/route/v1/driving/${sourceCoord[1]},${sourceCoord[0]};${targetCoord[1]},${targetCoord[0]}?overview=full&geometries=geojson&alternatives=true`;
-
-    fetch(url)
-      .then((res) => res.json())
-      .then((data) => {
-        if (isCancelled) return;
-        if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-          roadGeometryCache.set(cacheKey, data.routes);
-          computeAndApplyRoutes(data.routes);
-        } else {
-          setSingleRoadCoords([sourceCoord, targetCoord]);
-          setCompareRoadGeometries({
-            fastest: [sourceCoord, targetCoord],
-            ecoSafe: [sourceCoord, targetCoord],
-            riskWeighted: [sourceCoord, targetCoord]
-          });
-        }
-      })
-      .catch((err) => {
-        if (!isCancelled) {
-          console.warn('OSRM route fetch fallback:', err);
-          setSingleRoadCoords([sourceCoord, targetCoord]);
-          setCompareRoadGeometries({
-            fastest: [sourceCoord, targetCoord],
-            ecoSafe: [sourceCoord, targetCoord],
-            riskWeighted: [sourceCoord, targetCoord]
-          });
-        }
-      });
+    fetchPathRoadGeometry(currentRoute.path).then((pts) => {
+      if (!isCancelled && pts && pts.length > 0) {
+        roadGeometryCache.set(pathKey, pts);
+        setSingleRoadCoords(pts);
+      }
+    });
 
     return () => {
       isCancelled = true;
     };
-  }, [sourceCoord, targetCoord, sourceName, targetName, mode, currentRoute?.alpha, scoreRouteGeometry]);
+  }, [compareMode, currentRoute?.path, fetchPathRoadGeometry]);
+
+  // 2. Compare Mode: fetch road geometry for each of the 3 distinct graph paths
+  useEffect(() => {
+    if (!compareMode || !comparisonResult) {
+      setCompareRoadGeometries({ fastest: null, ecoSafe: null, riskWeighted: null });
+      return;
+    }
+
+    let isCancelled = false;
+    const modes = [
+      { key: 'fastest', data: comparisonResult.fastest },
+      { key: 'ecoSafe', data: comparisonResult.ecoSafe },
+      { key: 'riskWeighted', data: comparisonResult.riskWeighted }
+    ];
+
+    modes.forEach(({ key, data }) => {
+      if (!data?.path || data.path.length < 2) {
+        if (!isCancelled) {
+          setCompareRoadGeometries((prev) => ({ ...prev, [key]: null }));
+        }
+        return;
+      }
+
+      const pathKey = `compare-path-${key}-${data.path.join('->')}`;
+
+      if (roadGeometryCache.has(pathKey)) {
+        if (!isCancelled) {
+          setCompareRoadGeometries((prev) => ({
+            ...prev,
+            [key]: roadGeometryCache.get(pathKey)
+          }));
+        }
+        return;
+      }
+
+      fetchPathRoadGeometry(data.path).then((pts) => {
+        if (!isCancelled && pts && pts.length > 0) {
+          roadGeometryCache.set(pathKey, pts);
+          setCompareRoadGeometries((prev) => ({
+            ...prev,
+            [key]: pts
+          }));
+        }
+      });
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [compareMode, comparisonResult, fetchPathRoadGeometry]);
 
   // Active single-route geometry
   const activeGeometry = useMemo(() => {
     if (singleRoadCoords.length > 0) return singleRoadCoords;
-    if (sourceCoord && targetCoord) return [sourceCoord, targetCoord];
+    if (currentRoute?.path && currentRoute.path.length > 1) {
+      return currentRoute.path.map((name) => coordMap.get(name)).filter(Boolean);
+    }
     return [];
-  }, [singleRoadCoords, sourceCoord, targetCoord]);
+  }, [singleRoadCoords, currentRoute?.path, coordMap]);
 
   // Compare mode active geometries
   const activeCompareGeometries = useMemo(() => {
-    if (!compareMode) return {};
+    if (!compareMode || !comparisonResult) return {};
+    const fallbackPathCoords = (path) =>
+      path && path.length > 1 ? path.map((name) => coordMap.get(name)).filter(Boolean) : null;
+
     return {
-      fastest: compareRoadGeometries.fastest || (sourceCoord && targetCoord ? [sourceCoord, targetCoord] : null),
-      ecoSafe: compareRoadGeometries.ecoSafe || (sourceCoord && targetCoord ? [sourceCoord, targetCoord] : null),
-      riskWeighted: compareRoadGeometries.riskWeighted || (sourceCoord && targetCoord ? [sourceCoord, targetCoord] : null)
+      fastest: compareRoadGeometries.fastest || fallbackPathCoords(comparisonResult.fastest?.path),
+      ecoSafe: compareRoadGeometries.ecoSafe || fallbackPathCoords(comparisonResult.ecoSafe?.path),
+      riskWeighted: compareRoadGeometries.riskWeighted || fallbackPathCoords(comparisonResult.riskWeighted?.path)
     };
-  }, [compareMode, compareRoadGeometries, sourceCoord, targetCoord]);
+  }, [compareMode, comparisonResult, compareRoadGeometries, coordMap]);
 
   const allCompareCoords = useMemo(() => {
     return Object.values(activeCompareGeometries).filter(Boolean).flat();
