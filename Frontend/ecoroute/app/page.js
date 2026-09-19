@@ -308,17 +308,27 @@ export default function EcoRouteDashboard() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to trigger AQI spike');
 
+      // 1. Refresh neighborhood AQI values on the map
       await fetchNeighborhoods();
       await fetchHighRiskNodes();
 
+      // 2. Always recalculate route if source & target are selected — regardless of prior route existence
       if (compareMode && comparisonResult) {
         await handleCompare();
-      } else if (currentRoute) {
+      } else if (source && target) {
         await calculateRoute(source, target, mode, alpha, maxDeliveryMinutes, selectedRiderId, false);
       }
 
-      const count = data.updatedNodes?.length || 2;
-      showToast(`AQI spike triggered — ${count} zones updated`, 'border-amber-500');
+      // 3. Notify which nodes were spiked
+      const spikedNames = data.updatedNodes
+        ?.filter((n) => n.isSpike)
+        .map((n) => `${n.name} → AQI ${n.newAqi}`)
+        .join(', ');
+      const count = data.updatedNodes?.length || 0;
+      const spikeMsg = spikedNames
+        ? `⚡ Smog spike: ${spikedNames}`
+        : `AQI spike triggered — ${count} zones updated`;
+      showToast(spikeMsg, 'border-amber-500');
     } catch (err) {
       console.error('Spike error:', err);
       showToast(err.message || 'Failed to simulate spike', 'border-red-500');
