@@ -1,0 +1,21 @@
+{
+  "name": "ecoroute-workflows",
+  "version": "1.0.0",
+  "description": "Background Render Workflows for EcoRoute AQI Simulation",
+  "type": "module",
+  "main": "aqi-simulator.ts",
+  "scripts": {
+    "start": "tsx aqi-simulator.ts",
+    "trigger": "tsx trigger.ts",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@renderinc/sdk": "^1.0.0",
+    "neo4j-driver": "^6.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.4.5"
+  }
+}
