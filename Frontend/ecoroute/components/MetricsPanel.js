@@ -215,7 +215,9 @@ export default function MetricsPanel({
   }
 
   const pathLength = currentRoute.path ? currentRoute.path.length : 0;
-  const avgAqiPerNode = pathLength > 0 ? Math.round(calculatedAqiExposure / pathLength) : 0;
+  const avgAqiPerNode = currentRoute?.avgAqi != null
+    ? currentRoute.avgAqi
+    : (pathLength > 0 ? Math.round(calculatedAqiExposure / 5) : 0);
   const riderImpact = currentRoute.riderImpact;
 
   return (
@@ -319,7 +321,7 @@ export default function MetricsPanel({
             <span className="text-xs font-normal text-slate-400 ml-1">AQI pts</span>
           </div>
           <span className="text-[10px] text-slate-400 font-mono">
-            Avg: <strong className="text-slate-200">{avgAqiPerNode}</strong> AQI / station
+            Avg: <strong className="text-slate-200">{avgAqiPerNode}</strong> AQI level
           </span>
         </div>
 

@@ -134,15 +134,21 @@ export async function computeShortestPath({ source, target, mode = 'fastest', al
     const vNode = nodesMap.get(v);
     if (!uNode || !vNode) continue;
 
+    const avgAqi = (uNode.aqi + vNode.aqi) / 2;
     let edgeWeight = distance;
 
-    if (mode === 'risk-weighted') {
-      // Risk-weighted penalty formula:
-      // weight = distance + (alpha * ((aqiOf(u) + aqiOf(v)) / 2) / 100)
-      const avgAqi = (uNode.aqi + vNode.aqi) / 2;
-      const numAlpha = Number(alpha) || 1.0;
-      const aqiPenalty = (numAlpha * avgAqi) / 100;
-      edgeWeight = distance + aqiPenalty;
+    if (mode === 'eco-safe') {
+      // Eco-Safe: hard-excludes >400 nodes and strongly optimizes for cleaner, green air corridors
+      const pollutionMultiplier = 1 + Math.pow(avgAqi / 140, 2.2);
+      edgeWeight = distance * pollutionMultiplier;
+    } else if (mode === 'risk-weighted') {
+      // Risk-Weighted: alpha-calibrated trade-off between driving distance and air quality
+      // alpha = 0.0 -> pure physical distance (fastest)
+      // alpha = 1.0 -> balanced commercial trade-off
+      // alpha = 2.0 -> heavy priority on clean air & green routes
+      const numAlpha = typeof alpha === 'number' ? alpha : parseFloat(alpha) || 1.0;
+      const pollutionMultiplier = 1 + (numAlpha * Math.pow(avgAqi / 150, 1.8));
+      edgeWeight = distance * pollutionMultiplier;
     }
 
     if (!adj.has(u)) adj.set(u, []);
@@ -213,36 +219,42 @@ export async function computeShortestPath({ source, target, mode = 'fastest', al
     curr = previous[curr];
   }
 
-  // Calculate actual total physical distance along the route
+  // Calculate actual total physical distance and distance-weighted pollution along the route
   let totalPhysicalDist = 0;
+  let weightedAqiSum = 0;
+
   for (let i = 0; i < path.length - 1; i++) {
     const key = `${path[i]}-->${path[i + 1]}`;
     const d = roadDistLookup.get(key) || 0;
     totalPhysicalDist += d;
+
+    const uNode = nodesMap.get(path[i]);
+    const vNode = nodesMap.get(path[i + 1]);
+    const edgeAvgAqi = ((uNode?.aqi || 0) + (vNode?.aqi || 0)) / 2;
+    weightedAqiSum += d * edgeAvgAqi;
   }
   totalPhysicalDist = Math.round(totalPhysicalDist * 10) / 10;
 
-  // Calculate AQI metrics if risk-weighted
-  let totalAqiExposure = null;
-  let hazardPay = null;
+  // Distance-weighted average AQI courier actually experiences along the route
+  const distWeightedAvgAqi = totalPhysicalDist > 0
+    ? weightedAqiSum / totalPhysicalDist
+    : (nodesMap.get(path[0])?.aqi || 0);
 
-  // Sum of AQI values of all nodes along the path
-  totalAqiExposure = path.reduce((sum, name) => {
-    const node = nodesMap.get(name);
-    return sum + (node ? node.aqi : 0);
-  }, 0);
+  // Standardized trip exposure index (normalized to standard 5-leg trip baseline)
+  // Reflects true inhaled pollution without artificially penalizing routes that take cleaner detours with more waypoints
+  const totalAqiExposure = Math.round(distWeightedAvgAqi * 5);
 
   // Practical delivery partner hazard compensation formula:
   // Base distance incentive (₹1.50/km) + smog surge bonus (₹0.10 per AQI point above 150 baseline)
-  const avgAqi = path.length > 0 ? totalAqiExposure / path.length : 0;
   const distanceComponent = totalPhysicalDist * 1.5;
-  const smogSurcharge = Math.max(0, avgAqi - 150) * 0.1;
-  hazardPay = Math.round((distanceComponent + smogSurcharge) * 100) / 100;
+  const smogSurcharge = Math.max(0, distWeightedAvgAqi - 150) * 0.1;
+  const hazardPay = Math.round((distanceComponent + smogSurcharge) * 100) / 100;
 
   return {
     path,
     totalDistance: totalPhysicalDist,
     totalAqiExposure,
+    avgAqi: Math.round(distWeightedAvgAqi),
     hazardPay,
     bypassedCount: mode === 'eco-safe' ? bypassedCount : 0
   };
