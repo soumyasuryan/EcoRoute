@@ -22,6 +22,7 @@ export async function getAllNeighborhoods() {
              n.lat AS lat,
              n.lon AS lon,
              n.aqi AS aqi,
+             n.zone AS zone,
              ('Warehouse' IN labels(n) OR n.isWarehouse = true) AS isWarehouse
       ORDER BY n.name ASC
     `);
@@ -31,6 +32,7 @@ export async function getAllNeighborhoods() {
       lat: toNativeNumber(record.get('lat')),
       lon: toNativeNumber(record.get('lon')),
       aqi: Math.round(toNativeNumber(record.get('aqi'))),
+      zone: record.get('zone') || 'Delhi NCR',
       isWarehouse: Boolean(record.get('isWarehouse'))
     }));
   } finally {

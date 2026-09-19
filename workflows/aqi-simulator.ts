@@ -104,8 +104,8 @@ export async function runAqiSimulation(driver?: Driver): Promise<SimulationResul
       };
     }
 
-    // 2. Select 1 or 2 random neighborhoods
-    const countToPick = Math.random() < 0.5 ? 1 : 2;
+    // 2. Select 2 to 4 random neighborhoods for balanced dynamic updates across the expanded city
+    const countToPick = Math.floor(Math.random() * 3) + 2;
     const shuffled = [...neighborhoods].sort(() => 0.5 - Math.random());
     const selected = shuffled.slice(0, countToPick);
 

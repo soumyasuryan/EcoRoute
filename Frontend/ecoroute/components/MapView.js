@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import {
   MapContainer,
   TileLayer,
@@ -23,7 +23,7 @@ function RouteBounds({ routeCoords }) {
       try {
         map.fitBounds(routeCoords, { padding: [50, 50], maxZoom: 13 });
       } catch (e) {
-        // ignore if not ready
+        // ignore if map instance not ready
       }
     }
   }, [routeCoords, map]);
@@ -38,20 +38,23 @@ export default function MapView({
   target = '',
   mode = 'fastest'
 }) {
-  // Map Delhi NCR center coordinates
-  const delhiCenter = [28.6139, 77.209];
+  // Delhi NCR geographical center coordinates
+  const delhiCenter = [28.6139, 77.2090];
 
   // Lookup map for coords by name
-  const coordMap = new Map();
-  neighborhoods.forEach((n) => {
-    coordMap.set(n.name, [n.lat, n.lon]);
-  });
+  const coordMap = useMemo(() => {
+    const map = new Map();
+    neighborhoods.forEach((n) => {
+      map.set(n.name, [n.lat, n.lon]);
+    });
+    return map;
+  }, [neighborhoods]);
 
   const sourceName = source || currentRoute?.path?.[0] || '';
   const targetName = target || currentRoute?.path?.[currentRoute?.path?.length - 1] || '';
   const sourceCoord = coordMap.get(sourceName);
   const targetCoord = coordMap.get(targetName);
-  const routeCoords = [sourceCoord, targetCoord].filter(Boolean);
+  const routeCoords = useMemo(() => [sourceCoord, targetCoord].filter(Boolean), [sourceCoord, targetCoord]);
 
   // State to hold high-resolution, turn-by-turn road geometry following actual practical highway/arterial streets
   const [roadGeometry, setRoadGeometry] = useState([]);
@@ -166,26 +169,26 @@ export default function MapView({
     return () => {
       isCancelled = true;
     };
-  }, [sourceName, targetName, mode, currentRoute?.alpha, neighborhoods]);
+  }, [sourceName, targetName, mode, currentRoute?.alpha, neighborhoods, sourceCoord, targetCoord]);
 
-  // Helper to determine AQI color status
+  // Color mapping by AQI level
   const getAqiColor = (aqi) => {
     if (aqi < 200) return '#10b981'; // Green: Good / Moderate
-    if (aqi <= 400) return '#f59e0b'; // Yellow/Amber: Poor / Very Poor
-    return '#ef4444'; // Red: Severe / Hazardous (> 400)
+    if (aqi <= 400) return '#f59e0b'; // Amber: Poor / Severe
+    return '#f43f5e'; // Crimson Rose: Hazardous (> 400)
   };
 
   const getAqiCategory = (aqi) => {
-    if (aqi < 200) return { label: 'Moderate', badgeClass: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' };
-    if (aqi <= 400) return { label: 'Very Poor', badgeClass: 'bg-amber-500/20 text-amber-400 border-amber-500/30' };
-    return { label: 'Hazardous', badgeClass: 'bg-red-500/20 text-red-400 border-red-500/30' };
+    if (aqi < 200) return { label: 'Moderate', badgeClass: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' };
+    if (aqi <= 400) return { label: 'Severe', badgeClass: 'bg-amber-500/15 text-amber-400 border-amber-500/30' };
+    return { label: 'Hazardous', badgeClass: 'bg-rose-500/15 text-rose-400 border-rose-500/30' };
   };
 
-  // Route color styling by mode
+  // Route stroke color by mode
   const getRouteColor = () => {
     if (mode === 'eco-safe') return '#10b981'; // Emerald
-    if (mode === 'risk-weighted') return '#8b5cf6'; // Purple
-    return '#0284c7'; // Blue for Fastest
+    if (mode === 'risk-weighted') return '#a855f7'; // Purple
+    return '#38bdf8'; // Sky Blue for Fastest
   };
 
   // Clean up Leaflet DOM container state during HMR/re-renders
@@ -201,18 +204,18 @@ export default function MapView({
   }, []);
 
   return (
-    <div className="relative w-full h-full min-h-[500px] rounded-2xl overflow-hidden shadow-2xl border border-slate-700/60 bg-slate-950">
+    <div className="relative w-full h-full min-h-[540px] rounded-2xl overflow-hidden glass-panel border-slate-800/80 bg-slate-950">
       <MapContainer
         id="ecoroute-map-container"
         center={delhiCenter}
         zoom={11}
         scrollWheelZoom={true}
         className="w-full h-full z-0"
-        style={{ height: '100%', minHeight: '520px', width: '100%', background: '#0f172a' }}
+        style={{ height: '100%', minHeight: '540px', width: '100%', background: '#080c15' }}
       >
-        {/* Standard OpenStreetMap Tiles (No API key needed) */}
+        {/* Clean Standard OpenStreetMap Tiles */}
         <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           maxZoom={19}
         />
@@ -227,153 +230,172 @@ export default function MapView({
               key={`road-${road.source}-${road.target}-${idx}`}
               positions={[c1, c2]}
               pathOptions={{
-                color: '#64748b',
-                weight: 1.5,
-                opacity: 0.35,
+                color: '#475569',
+                weight: 1.2,
+                opacity: 0.25,
                 dashArray: '3, 6'
               }}
             />
           );
         })}
 
-        {/* Highlighted Active Route Polyline following real road network */}
-        {routeCoords.length > 1 && (
+        {/* Highlighted Active Practical Route Polyline following real road network */}
+        {roadGeometry.length > 1 && (
           <>
-            {/* Route glow outline */}
+            {/* Route atmospheric glow stroke */}
             <Polyline
-              key={`route-glow-${(currentRoute?.path || []).join('-')}-${mode}-${currentRoute?.totalDistance}-${roadGeometry.length}`}
-              positions={roadGeometry.length > 0 ? roadGeometry : routeCoords}
+              key={`route-glow-${sourceName}-${targetName}-${mode}-${roadGeometry.length}`}
+              positions={roadGeometry}
               pathOptions={{
                 color: getRouteColor(),
                 weight: 8,
-                opacity: 0.45
+                opacity: 0.4
               }}
             />
-            {/* Sharp core polyline following real street curves and highways */}
+            {/* Sharp core polyline following actual highway avenues */}
             <Polyline
-              key={`route-core-${(currentRoute?.path || []).join('-')}-${mode}-${currentRoute?.totalDistance}-${roadGeometry.length}`}
-              positions={roadGeometry.length > 0 ? roadGeometry : routeCoords}
+              key={`route-core-${sourceName}-${targetName}-${mode}-${roadGeometry.length}`}
+              positions={roadGeometry}
               pathOptions={{
                 color: getRouteColor(),
-                weight: 4.5,
+                weight: 4,
                 opacity: 0.95
               }}
             />
-            <RouteBounds routeCoords={roadGeometry.length > 0 ? roadGeometry : routeCoords} />
+            <RouteBounds routeCoords={roadGeometry} />
           </>
         )}
 
-        {/* Neighborhood Markers */}
+        {/* Station Markers (Warehouses & Customer Neighborhoods) */}
         {neighborhoods.map((node) => {
           const color = getAqiColor(node.aqi);
           const { label, badgeClass } = getAqiCategory(node.aqi);
-          const isSelectedSource = source === node.name;
-          const isSelectedTarget = target === node.name;
+          const isSelectedSource = sourceName === node.name;
+          const isSelectedTarget = targetName === node.name;
           const isOnRoute = currentRoute?.path?.includes(node.name);
-
-          // Warehouses get larger radius, high contrast purple/slate border
           const isWarehouse = node.isWarehouse;
-          const radius = isWarehouse ? 13 : isSelectedSource || isSelectedTarget ? 11 : 9;
+          const isHazardous = node.aqi > 400;
+
+          const radius = isWarehouse ? 11 : isSelectedSource || isSelectedTarget ? 10 : 7;
 
           return (
-            <CircleMarker
-              key={node.name}
-              center={[node.lat, node.lon]}
-              radius={radius}
-              pathOptions={{
-                color: isWarehouse
-                  ? '#3b82f6'
-                  : isSelectedSource
-                  ? '#3b82f6'
-                  : isSelectedTarget
-                  ? '#ec4899'
-                  : isOnRoute
-                  ? '#ffffff'
-                  : '#1e293b',
-                weight: isWarehouse ? 4 : isSelectedSource || isSelectedTarget ? 3 : 2,
-                fillColor: color,
-                fillOpacity: isWarehouse ? 0.95 : 0.85,
-                dashArray: isWarehouse ? '2, 3' : undefined
-              }}
-            >
-              <Tooltip direction="top" offset={[0, -8]} opacity={0.95}>
-                <div className="font-semibold text-xs text-slate-800">
-                  {node.name} {isWarehouse && '🏭 [Warehouse]'}
-                  <span className="block text-[11px] font-normal text-slate-600">
-                    AQI: <strong style={{ color }}>{node.aqi}</strong>
-                  </span>
-                </div>
-              </Tooltip>
+            <div key={node.name}>
+              {/* Pulsing radar ring for severe hazardous nodes */}
+              {isHazardous && (
+                <CircleMarker
+                  center={[node.lat, node.lon]}
+                  radius={radius + 8}
+                  pathOptions={{
+                    color: '#f43f5e',
+                    weight: 1.5,
+                    opacity: 0.5,
+                    fillColor: '#f43f5e',
+                    fillOpacity: 0.1,
+                    dashArray: '2, 4'
+                  }}
+                />
+              )}
 
-              <Popup>
-                <div className="p-1 max-w-[200px] text-slate-900">
-                  <div className="flex items-center justify-between gap-2 mb-1">
-                    <h4 className="font-bold text-sm tracking-tight m-0">
-                      {node.name}
-                    </h4>
-                    {isWarehouse && (
-                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 uppercase tracking-wider">
-                        Warehouse
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 mt-2">
-                    <span className="text-xs text-slate-600">AQI Index:</span>
-                    <span
-                      className={`text-xs font-bold px-2 py-0.5 rounded border ${badgeClass}`}
-                    >
-                      {node.aqi} • {label}
+              <CircleMarker
+                center={[node.lat, node.lon]}
+                radius={radius}
+                pathOptions={{
+                  color: isWarehouse
+                    ? '#60a5fa'
+                    : isSelectedSource
+                    ? '#38bdf8'
+                    : isSelectedTarget
+                    ? '#34d399'
+                    : isOnRoute
+                    ? '#ffffff'
+                    : '#0f172a',
+                  weight: isWarehouse ? 3.5 : isSelectedSource || isSelectedTarget ? 3 : isOnRoute ? 2.5 : 1.5,
+                  fillColor: color,
+                  fillOpacity: isWarehouse ? 0.95 : 0.85,
+                  dashArray: isWarehouse ? '3, 3' : undefined
+                }}
+              >
+                <Tooltip direction="top" offset={[0, -6]} opacity={0.95}>
+                  <div className="font-sans text-xs text-slate-900 font-semibold">
+                    {node.name} {isWarehouse && '🏭 [Warehouse]'}
+                    <span className="block text-[10px] font-mono font-normal text-slate-600">
+                      Zone: {node.zone || 'Delhi NCR'} • AQI: <strong style={{ color }}>{node.aqi}</strong>
                     </span>
                   </div>
-                  <div className="text-[11px] text-slate-500 mt-2">
-                    Coords: {node.lat.toFixed(4)}, {node.lon.toFixed(4)}
+                </Tooltip>
+
+                <Popup>
+                  <div className="p-1 min-w-[180px] text-slate-100 font-sans">
+                    <div className="flex items-center justify-between gap-2 pb-1 border-b border-slate-700/60">
+                      <h4 className="font-semibold text-xs text-slate-100">
+                        {node.name}
+                      </h4>
+                      {isWarehouse && (
+                        <span className="text-[9px] font-mono font-semibold px-1.5 py-0.2 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 uppercase">
+                          Warehouse
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center justify-between mt-2 text-xs">
+                      <span className="text-slate-400 text-[11px]">Air Quality:</span>
+                      <span className={`text-[10px] font-mono font-semibold px-2 py-0.5 rounded border ${badgeClass}`}>
+                        {node.aqi} • {label}
+                      </span>
+                    </div>
+
+                    <div className="text-[10px] font-mono text-slate-400 mt-2">
+                      Zone: {node.zone || 'Delhi NCR'}
+                    </div>
+
+                    {isSelectedSource && (
+                      <div className="mt-2 text-[10px] font-mono text-blue-400 flex items-center gap-1">
+                        <span>●</span> Active Origin Hub
+                      </div>
+                    )}
+                    {isSelectedTarget && (
+                      <div className="mt-2 text-[10px] font-mono text-emerald-400 flex items-center gap-1">
+                        <span>●</span> Active Customer Destination
+                      </div>
+                    )}
                   </div>
-                  {isSelectedSource && (
-                    <div className="mt-2 text-[11px] font-medium text-blue-600">
-                      📍 Selected as Route Origin
-                    </div>
-                  )}
-                  {isSelectedTarget && (
-                    <div className="mt-2 text-[11px] font-medium text-pink-600">
-                      🎯 Selected as Destination
-                    </div>
-                  )}
-                </div>
-              </Popup>
-            </CircleMarker>
+                </Popup>
+              </CircleMarker>
+            </div>
           );
         })}
       </MapContainer>
 
-      {/* Top Right Street Navigation Badge */}
-      <div className="absolute top-4 right-4 z-[1000] bg-slate-900/90 backdrop-blur-md px-3 py-1.5 rounded-xl border border-slate-700/60 shadow-lg text-[11px] text-slate-200 flex items-center gap-2">
+      {/* Floating Header Badge */}
+      <div className="absolute top-4 right-4 z-[1000] glass-panel px-3 py-1.5 rounded-xl border border-slate-800 text-[11px] text-slate-200 flex items-center gap-2 shadow-lg">
         <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-        <span className="font-semibold text-slate-300">
-          {isLoadingRoads ? '🛣️ Tracing Delhi NCR Roads...' : '🛣️ Street-Level Road Network'}
+        <span className="font-medium text-slate-300">
+          {isLoadingRoads ? 'Tracing Arterial Highways...' : 'Delhi NCR Highway Routing'}
         </span>
       </div>
 
-      {/* Map Legend Overlay */}
-      <div className="absolute bottom-4 right-4 z-[1000] bg-slate-900/90 backdrop-blur-md px-3.5 py-2.5 rounded-xl border border-slate-700/60 shadow-lg text-xs text-slate-200">
-        <div className="font-semibold text-[11px] tracking-wider uppercase text-slate-400 mb-2">
-          Air Quality Legend
+      {/* Floating Minimal Legend */}
+      <div className="absolute bottom-4 right-4 z-[1000] glass-panel px-3.5 py-2.5 rounded-xl border border-slate-800 text-xs text-slate-300 shadow-lg">
+        <div className="font-mono text-[10px] tracking-wider uppercase text-slate-400 mb-2 flex items-center justify-between gap-4">
+          <span>AQI Sensor Status</span>
+          <span className="text-slate-500">{neighborhoods.length} Stations</span>
         </div>
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-1.5 text-[11px]">
           <div className="flex items-center gap-2">
-            <span className="w-3 h-3 rounded-full bg-emerald-500 inline-block shadow-sm"></span>
-            <span>&lt; 200 Good / Moderate</span>
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-sm"></span>
+            <span>&lt; 200 Moderate / Acceptable</span>
           </div>
           <div className="flex items-center gap-2">
-            <span className="w-3 h-3 rounded-full bg-amber-500 inline-block shadow-sm"></span>
-            <span>200 - 400 Poor / Severe</span>
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shadow-sm"></span>
+            <span>200 - 400 Severe Exposure</span>
           </div>
           <div className="flex items-center gap-2">
-            <span className="w-3 h-3 rounded-full bg-red-500 inline-block shadow-sm"></span>
-            <span>&gt; 400 Hazardous (Red Zone)</span>
+            <span className="w-2.5 h-2.5 rounded-full bg-rose-500 shadow-sm"></span>
+            <span>&gt; 400 Hazardous (Red Exclusion Zone)</span>
           </div>
-          <div className="flex items-center gap-2 pt-1 border-t border-slate-800">
-            <span className="w-3 h-3 rounded-full border-2 border-dashed border-blue-400 bg-slate-700 inline-block"></span>
-            <span className="font-medium text-blue-300">🏭 Fulfillment Warehouse</span>
+          <div className="flex items-center gap-2 pt-1 border-t border-slate-800/80">
+            <span className="w-2.5 h-2.5 rounded-full border border-dashed border-blue-400 bg-slate-700"></span>
+            <span className="text-blue-300 font-medium">Fulfillment Warehouse Hub (5)</span>
           </div>
         </div>
       </div>
