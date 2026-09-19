@@ -47,51 +47,115 @@ export default function MapView({
     coordMap.set(n.name, [n.lat, n.lon]);
   });
 
-  // Convert currentRoute path array ['Dwarka', 'Janakpuri', ...] to [[lat, lon], ...]
-  const routeCoords = (currentRoute?.path || [])
-    .map((name) => coordMap.get(name))
-    .filter(Boolean);
+  const sourceName = source || currentRoute?.path?.[0] || '';
+  const targetName = target || currentRoute?.path?.[currentRoute?.path?.length - 1] || '';
+  const sourceCoord = coordMap.get(sourceName);
+  const targetCoord = coordMap.get(targetName);
+  const routeCoords = [sourceCoord, targetCoord].filter(Boolean);
 
-  // State to hold high-resolution, turn-by-turn road geometry following actual streets
+  // State to hold high-resolution, turn-by-turn road geometry following actual practical highway/arterial streets
   const [roadGeometry, setRoadGeometry] = useState([]);
   const [isLoadingRoads, setIsLoadingRoads] = useState(false);
 
-  // Query OSRM OpenStreetMap routing service for actual street-level geometry
+  // Query OSRM OpenStreetMap routing service for the practical driving route directly from origin to destination
   useEffect(() => {
-    if (!currentRoute?.path || currentRoute.path.length < 2) {
+    if (!sourceCoord || !targetCoord || sourceName === targetName) {
       setRoadGeometry([]);
       return;
     }
 
-    const pathKey = currentRoute.path.join('->');
-    if (roadGeometryCache.has(pathKey)) {
-      setRoadGeometry(roadGeometryCache.get(pathKey));
+    const cacheKey = `${sourceName}->${targetName}-${mode}-${currentRoute?.alpha || 1.0}`;
+    if (roadGeometryCache.has(cacheKey)) {
+      setRoadGeometry(roadGeometryCache.get(cacheKey));
       return;
     }
 
-    // Immediately display waypoint centroids as fallback
-    const directCoords = currentRoute.path.map((name) => coordMap.get(name)).filter(Boolean);
-    setRoadGeometry(directCoords);
+    // Direct origin-to-destination straight line as immediate fallback
+    setRoadGeometry([sourceCoord, targetCoord]);
     setIsLoadingRoads(true);
 
-    // OSRM expects coordinates in "lon,lat" format separated by ";"
-    const osrmCoords = directCoords.map(([lat, lon]) => `${lon},${lat}`).join(';');
-    const url = `https://router.project-osrm.org/route/v1/driving/${osrmCoords}?overview=full&geometries=geojson`;
+    // Query OSRM for practical driving route directly from warehouse origin to customer destination
+    const url = `https://router.project-osrm.org/route/v1/driving/${sourceCoord[1]},${sourceCoord[0]};${targetCoord[1]},${targetCoord[0]}?overview=full&geometries=geojson&alternatives=true`;
 
     let isCancelled = false;
 
     fetch(url)
       .then((res) => res.json())
       .then((data) => {
-        if (!isCancelled && data.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
-          // Convert GeoJSON [lon, lat] back to Leaflet [lat, lon]
-          const realRoadCoords = data.routes[0].geometry.coordinates.map(([lon, lat]) => [lat, lon]);
-          roadGeometryCache.set(pathKey, realRoadCoords);
+        if (isCancelled || data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
+          return;
+        }
+
+        const candidateRoutes = data.routes;
+        let chosenRoute = candidateRoutes[0];
+
+        // For Eco-Safe or Risk-Weighted, evaluate candidate highway routes against neighborhood AQI
+        if (candidateRoutes.length > 1 && mode !== 'fastest') {
+          const scoredRoutes = candidateRoutes.map((route, idx) => {
+            const coords = route.geometry.coordinates; // [lon, lat]
+            let totalAqi = 0;
+            let maxAqi = 0;
+            const step = Math.max(1, Math.floor(coords.length / 30));
+            let samples = 0;
+
+            for (let i = 0; i < coords.length; i += step) {
+              const [lon, lat] = coords[i];
+              let minDistSq = Infinity;
+              let localAqi = 150;
+
+              for (const n of neighborhoods) {
+                const distSq = (n.lat - lat) ** 2 + (n.lon - lon) ** 2;
+                if (distSq < minDistSq) {
+                  minDistSq = distSq;
+                  localAqi = n.aqi;
+                }
+              }
+
+              totalAqi += localAqi;
+              if (localAqi > maxAqi) maxAqi = localAqi;
+              samples++;
+            }
+
+            const avgAqi = samples > 0 ? totalAqi / samples : 150;
+            const distKm = route.distance / 1000;
+
+            return {
+              route,
+              idx,
+              avgAqi,
+              maxAqi,
+              distKm
+            };
+          });
+
+          if (mode === 'eco-safe') {
+            // Pick route with lowest peak/max AQI (avoiding severe smog hotspots), tie-break with lowest avg AQI
+            scoredRoutes.sort((a, b) => {
+              if (a.maxAqi !== b.maxAqi) return a.maxAqi - b.maxAqi;
+              return a.avgAqi - b.avgAqi;
+            });
+            chosenRoute = scoredRoutes[0].route;
+          } else if (mode === 'risk-weighted') {
+            // Calibrate route using cost function: distance + (alpha * avgAQI / 100)
+            const alphaVal = Number(currentRoute?.alpha) || 1.0;
+            scoredRoutes.sort((a, b) => {
+              const costA = a.distKm + (alphaVal * a.avgAqi) / 100;
+              const costB = b.distKm + (alphaVal * b.avgAqi) / 100;
+              return costA - costB;
+            });
+            chosenRoute = scoredRoutes[0].route;
+          }
+        }
+
+        if (chosenRoute?.geometry?.coordinates) {
+          // Convert GeoJSON [lon, lat] to Leaflet [lat, lon]
+          const realRoadCoords = chosenRoute.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+          roadGeometryCache.set(cacheKey, realRoadCoords);
           setRoadGeometry(realRoadCoords);
         }
       })
       .catch((err) => {
-        console.warn('Could not fetch OSRM road geometry, using fallback coordinates:', err.message);
+        console.warn('Could not fetch practical OSRM road geometry, using fallback straight-line:', err.message);
       })
       .finally(() => {
         if (!isCancelled) {
@@ -102,7 +166,7 @@ export default function MapView({
     return () => {
       isCancelled = true;
     };
-  }, [currentRoute?.path]);
+  }, [sourceName, targetName, mode, currentRoute?.alpha, neighborhoods]);
 
   // Helper to determine AQI color status
   const getAqiColor = (aqi) => {
