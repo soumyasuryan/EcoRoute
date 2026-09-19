@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo, useSyncExternalStore } from 'react';
+import { useEffect, useState, useMemo, useCallback, useSyncExternalStore } from 'react';
 import {
   MapContainer,
   TileLayer,
