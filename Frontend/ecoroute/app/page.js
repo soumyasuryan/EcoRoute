@@ -54,25 +54,20 @@ export default function EcoRouteDashboard() {
     }
   }, []);
 
-  // 2. Compute shortest route
+  // 2. Compute shortest route (pure function with parameters, no state re-creation)
   const calculateRoute = useCallback(
     async (src, tgt, currentMode, currentAlpha) => {
-      const activeSrc = src || source;
-      const activeTgt = tgt || target;
-      const activeMode = currentMode || mode;
-      const activeAlpha = currentAlpha !== undefined ? currentAlpha : alpha;
-
-      if (!activeSrc || !activeTgt) return;
+      if (!src || !tgt) return;
       setLoadingRoute(true);
       try {
         const res = await fetch('/api/route', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            source: activeSrc,
-            target: activeTgt,
-            mode: activeMode,
-            alpha: activeAlpha
+            source: src,
+            target: tgt,
+            mode: currentMode,
+            alpha: currentAlpha
           })
         });
 
@@ -89,7 +84,7 @@ export default function EcoRouteDashboard() {
         setLoadingRoute(false);
       }
     },
-    [source, target, mode, alpha]
+    []
   );
 
   // Initial load runs strictly once on mount
@@ -118,7 +113,8 @@ export default function EcoRouteDashboard() {
     return () => {
       isMounted = false;
     };
-  }, [fetchNeighborhoods, calculateRoute]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Reactive state handlers
   const handleSourceChange = (newSource) => {
