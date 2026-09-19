@@ -1,114 +1,132 @@
 @import "tailwindcss";
 
 :root {
-  --background: #080c15;
-  --foreground: #f1f5f9;
-  --card-surface: #0e1526;
-  --card-border: rgba(255, 255, 255, 0.08);
-  --card-hover: rgba(255, 255, 255, 0.12);
-  --accent-blue: #38bdf8;
-  --accent-emerald: #10b981;
-  --accent-amber: #f59e0b;
-  --accent-rose: #f43f5e;
+  --background: #090d16;
+  --foreground: #f8fafc;
+  --surface: #0f172a;
+  --surface-card: rgba(15, 23, 42, 0.75);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-hover: rgba(255, 255, 255, 0.16);
+  --accent: #3b82f6;
+  --accent-glow: rgba(59, 130, 246, 0.25);
+
+  /* AQI Severity */
+  --aqi-normal: #10b981;
+  --aqi-elevated: #f59e0b;
+  --aqi-severe: #ef4444;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-mono: var(--font-geist-mono), monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
   background-color: var(--background);
+  background-image: 
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(30, 58, 138, 0.15), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 100%, rgba(15, 23, 42, 0.4), transparent);
   color: var(--foreground);
-  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  overflow-x: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
 }
 
-/* Enterprise Glass Panel */
+/* Glassmorphic Professional Surface */
 .glass-panel {
-  background: rgba(14, 21, 37, 0.75);
+  background: rgba(15, 23, 42, 0.75);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.5);
 }
 
-.glass-panel-subtle {
-  background: rgba(14, 21, 37, 0.45);
+.glass-card {
+  background: linear-gradient(145deg, rgba(26, 36, 56, 0.6) 0%, rgba(15, 23, 42, 0.8) 100%);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.4);
 }
 
-/* Custom Sleek Scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: #080c15;
-}
-::-webkit-scrollbar-thumb {
-  background: #1e293b;
-  border-radius: 9999px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+.glass-card:hover {
+  border-color: rgba(255, 255, 255, 0.15);
 }
 
-/* Pulse radar ring for hazardous stations */
-@keyframes radar-pulse {
+/* Pulse animation for live beacon */
+@keyframes beacon-pulse {
   0% {
     transform: scale(0.95);
-    opacity: 0.8;
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
   }
-  50% {
-    transform: scale(1.35);
-    opacity: 0.2;
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 6px rgba(59, 130, 246, 0);
   }
   100% {
     transform: scale(0.95);
-    opacity: 0.8;
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
   }
 }
 
-.animate-radar {
-  animation: radar-pulse 2.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+.live-beacon {
+  animation: beacon-pulse 2s infinite cubic-bezier(0.4, 0, 0.6, 1);
 }
 
-/* Leaflet Map Styling Tweaks */
+/* Range input styling with gradient track */
+input[type="range"] {
+  accent-color: #3b82f6;
+}
+
+/* Leaflet Map: Keep Map Canvas Bright & Clear */
 .leaflet-container {
   font-family: inherit !important;
-  background-color: #080c15 !important;
+  background-color: #f1f5f9 !important;
+  border-radius: 8px;
 }
 
+/* Popup on Map: Sleek dark glass popup */
 .leaflet-popup-content-wrapper {
-  background: #0e1526 !important;
-  color: #f1f5f9 !important;
-  border: 1px solid rgba(255, 255, 255, 0.12) !important;
-  border-radius: 12px !important;
-  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.6) !important;
+  background: rgba(15, 23, 42, 0.95) !important;
+  color: #f8fafc !important;
+  backdrop-filter: blur(12px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 10px 25px -3px rgba(0, 0, 0, 0.7) !important;
+  padding: 0 !important;
+}
+
+.leaflet-popup-content {
+  margin: 12px 14px !important;
+  line-height: 1.4 !important;
 }
 
 .leaflet-popup-tip {
-  background: #0e1526 !important;
+  background: #0f172a !important;
+  box-shadow: none !important;
 }
 
 .leaflet-control-zoom {
-  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border: 1px solid rgba(0, 0, 0, 0.15) !important;
   border-radius: 8px !important;
   overflow: hidden !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15) !important;
 }
 
 .leaflet-control-zoom a {
-  background: #0e1526 !important;
-  color: #94a3b8 !important;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+  background: #ffffff !important;
+  color: #1e293b !important;
+  border-bottom: 1px solid #e2e8f0 !important;
 }
 
 .leaflet-control-zoom a:hover {
-  background: #1e293b !important;
-  color: #f1f5f9 !important;
+  background: #f8fafc !important;
+  color: #0f172a !important;
 }

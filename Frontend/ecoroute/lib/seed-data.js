@@ -201,6 +201,7 @@ export async function seedDatabase() {
   try {
     // 1. Clear existing graph data
     console.log('🧹 Clearing existing graph data...');
+    await session.run(`MATCH (r:Rider) DETACH DELETE r`);
     await session.run(`MATCH (n:Neighborhood) DETACH DELETE n`);
 
     // 2. Insert Neighborhood nodes with initial realistic winter AQI values
@@ -219,6 +220,7 @@ export async function seedDatabase() {
           lat: $lat,
           lon: $lon,
           aqi: $aqi,
+          aqiHistory: [],
           isWarehouse: $isWarehouse,
           zone: $zone
         })
@@ -238,8 +240,8 @@ export async function seedDatabase() {
       ).catch(async () => {
         // Fallback without apoc
         const labelQuery = n.isWarehouse
-          ? `CREATE (n:Neighborhood:Warehouse { name: $name, lat: $lat, lon: $lon, aqi: $aqi, isWarehouse: true, zone: $zone })`
-          : `CREATE (n:Neighborhood { name: $name, lat: $lat, lon: $lon, aqi: $aqi, isWarehouse: false, zone: $zone })`;
+          ? `CREATE (n:Neighborhood:Warehouse { name: $name, lat: $lat, lon: $lon, aqi: $aqi, aqiHistory: [], isWarehouse: true, zone: $zone })`
+          : `CREATE (n:Neighborhood { name: $name, lat: $lat, lon: $lon, aqi: $aqi, aqiHistory: [], isWarehouse: false, zone: $zone })`;
         await session.run(labelQuery, {
           name: n.name,
           lat: n.lat,
@@ -282,7 +284,23 @@ export async function seedDatabase() {
       edgeCount += 2;
     }
 
-    console.log(`✅ Seeded ${NEIGHBORHOODS.length} nodes (5 Warehouses) and ${edgeCount} directional :ROAD edges.`);
+    // 4. Create 4 :Rider nodes with properties { name, dailyCap, currentExposure: 0 }
+    console.log('🚴 Seeding fleet riders with daily exposure caps...');
+    const RIDERS = [
+      { name: 'Rider A (Rajesh)', dailyCap: 2000, currentExposure: 0 },
+      { name: 'Rider B (Amit)', dailyCap: 2000, currentExposure: 0 },
+      { name: 'Rider C (Sunil)', dailyCap: 2000, currentExposure: 0 },
+      { name: 'Rider D (Vikas)', dailyCap: 2000, currentExposure: 0 }
+    ];
+
+    for (const r of RIDERS) {
+      await session.run(
+        `CREATE (r:Rider { name: $name, dailyCap: $dailyCap, currentExposure: $currentExposure })`,
+        r
+      );
+    }
+
+    console.log(`✅ Seeded ${NEIGHBORHOODS.length} nodes, ${edgeCount} directional :ROAD edges, and ${RIDERS.length} fleet riders.`);
     console.log('🎉 Database seeding complete!');
   } catch (error) {
     console.error('❌ Error during seeding:', error);

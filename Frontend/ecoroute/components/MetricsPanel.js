@@ -1,209 +1,365 @@
 'use client';
 
+import { useMemo } from 'react';
+
 export default function MetricsPanel({
   currentRoute = null,
+  neighborhoods = [],
   mode = 'fastest',
-  source = '',
-  target = '',
-  loading = false
+  loading = false,
+  // Compare mode props
+  compareMode = false,
+  comparisonResult = null,
+  loadingCompare = false
 }) {
+  // AQI lookup map
+  const aqiMap = useMemo(() => {
+    return new Map(neighborhoods.map((n) => [n.name, n.aqi]));
+  }, [neighborhoods]);
+
+  const calculatedAqiExposure = useMemo(() => {
+    if (currentRoute?.totalAqiExposure != null) {
+      return currentRoute.totalAqiExposure;
+    }
+    if (!currentRoute?.path || currentRoute.path.length === 0) return 0;
+    return currentRoute.path.reduce((sum, name) => sum + (aqiMap.get(name) || 0), 0);
+  }, [currentRoute, aqiMap]);
+
+  const calculatedHazardPay = useMemo(() => {
+    if (currentRoute?.hazardPay != null) {
+      return Number(currentRoute.hazardPay);
+    }
+    if (calculatedAqiExposure == null || !currentRoute?.totalDistance) return 0;
+    const pathLen = currentRoute.path ? currentRoute.path.length : 1;
+    const avgAqi = calculatedAqiExposure / pathLen;
+    const distanceComponent = (currentRoute.totalDistance || 0) * 1.5;
+    const smogSurcharge = Math.max(0, avgAqi - 150) * 0.1;
+    return Math.round((distanceComponent + smogSurcharge) * 100) / 100;
+  }, [currentRoute, calculatedAqiExposure]);
+
+  const calculatedBypassed = useMemo(() => {
+    if (currentRoute?.bypassedCount != null && currentRoute.bypassedCount > 0) {
+      return currentRoute.bypassedCount;
+    }
+    if (mode === 'eco-safe') {
+      return neighborhoods.filter((n) => n.aqi > 400 && !n.isWarehouse).length;
+    }
+    return 0;
+  }, [currentRoute, mode, neighborhoods]);
+
+  // --- COMPARE MODE ---
+  if (compareMode) {
+    if (loadingCompare) {
+      return (
+        <div className="glass-panel rounded-lg p-4 animate-pulse">
+          <div className="h-4 w-32 bg-slate-700/60 rounded mb-4" />
+          <div className="space-y-2">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="h-10 bg-slate-800/60 rounded-lg" />
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    if (!comparisonResult) {
+      return (
+        <div className="glass-panel rounded-lg p-4 text-center border border-dashed border-slate-700/80">
+          <p className="text-xs text-slate-400 font-medium">
+            Click &ldquo;Compare All Modes&rdquo; to see Fastest, Eco-Safe and Risk-Weighted side-by-side.
+          </p>
+        </div>
+      );
+    }
+
+    const { fastest, ecoSafe, riskWeighted } = comparisonResult;
+    const rows = [
+      { label: 'Fastest', key: 'fastest', data: fastest, dotColor: '#64748b' },
+      { label: 'Eco-Safe', key: 'ecoSafe', data: ecoSafe, dotColor: '#10b981' },
+      { label: 'Risk-Weighted', key: 'riskWeighted', data: riskWeighted, dotColor: '#3b82f6' }
+    ];
+
+    // Find best values for highlighting
+    const validRows = rows.filter((r) => r.data?.path);
+    const bestDist = validRows.length > 0 ? Math.min(...validRows.map((r) => r.data.totalDistance || Infinity)) : null;
+    const bestAqi = validRows.length > 0 ? Math.min(...validRows.map((r) => r.data.totalAqiExposure || Infinity)) : null;
+    const bestPay = validRows.length > 0 ? Math.min(...validRows.map((r) => r.data.hazardPay || Infinity)) : null;
+
+    return (
+      <div className="glass-panel rounded-lg p-4 flex flex-col gap-3 text-slate-200">
+        <div className="flex items-center justify-between pb-2.5 border-b border-slate-700/60">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-blue-500" />
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-200">
+              Mode Comparison
+            </h3>
+          </div>
+          <span className="text-[10px] font-mono text-slate-400">
+            3 routing strategies
+          </span>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-slate-400 border-b border-slate-800">
+                <th className="text-left py-2 pr-3 font-semibold uppercase text-[10px] tracking-wider">Mode</th>
+                <th className="text-right py-2 px-2 font-semibold uppercase text-[10px] tracking-wider">Distance</th>
+                <th className="text-right py-2 px-2 font-semibold uppercase text-[10px] tracking-wider">AQI Exposure</th>
+                <th className="text-right py-2 pl-2 font-semibold uppercase text-[10px] tracking-wider">Hazard Pay</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/60">
+              {rows.map((row) => {
+                const { data } = row;
+                const noPath = !data?.path;
+                const dist = data?.totalDistance;
+                const aqi = data?.totalAqiExposure;
+                const pay = data?.hazardPay;
+
+                return (
+                  <tr key={row.key} className="hover:bg-slate-800/20 transition-colors">
+                    <td className="py-2.5 pr-3">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: row.dotColor }}
+                        />
+                        <span className="font-semibold text-slate-200">{row.label}</span>
+                      </div>
+                    </td>
+                    {noPath ? (
+                      <td colSpan={3} className="py-2.5 text-right text-amber-400 italic text-[10px]">
+                        No safe path available
+                      </td>
+                    ) : (
+                      <>
+                        <td className="py-2.5 px-2 text-right">
+                          <span className={`font-mono font-semibold ${dist === bestDist ? 'text-emerald-400' : 'text-slate-200'}`}>
+                            {dist != null ? `${dist} km` : '—'}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-2 text-right">
+                          <span className={`font-mono font-semibold ${aqi === bestAqi ? 'text-emerald-400' : 'text-slate-200'}`}>
+                            {aqi != null ? aqi.toLocaleString() : '—'}
+                          </span>
+                        </td>
+                        <td className="py-2.5 pl-2 text-right">
+                          <span className={`font-mono font-semibold ${pay === bestPay ? 'text-emerald-400' : 'text-slate-200'}`}>
+                            {pay != null ? `₹${Number(pay).toFixed(2)}` : '—'}
+                          </span>
+                        </td>
+                      </>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-[10px] text-slate-500 mt-1">
+          <span className="text-emerald-400 font-semibold">Green</span> = best value in each column.
+        </p>
+      </div>
+    );
+  }
+
+  // --- SINGLE ROUTE MODE ---
+
+  // 1. Loading skeleton
   if (loading) {
     return (
-      <div className="glass-panel rounded-2xl p-5 text-center text-slate-400 animate-pulse">
-        <div className="text-xs font-mono uppercase tracking-wider">Evaluating optimal transit corridor...</div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {[1, 2, 3, 4].map((i) => (
+          <div
+            key={i}
+            className="glass-card rounded-lg p-3.5 h-24 flex flex-col justify-between animate-pulse"
+          >
+            <div className="h-3 w-20 bg-slate-700/60 rounded" />
+            <div className="h-7 w-24 bg-slate-700/60 rounded" />
+          </div>
+        ))}
       </div>
     );
   }
 
+  // 2. Empty state
   if (!currentRoute) {
     return (
-      <div className="glass-panel rounded-2xl p-5 text-center text-slate-400">
-        <div className="text-xs">
-          Select warehouse origin and customer destination to view live dispatch metrics.
-        </div>
+      <div className="glass-panel rounded-lg p-4 text-center border border-dashed border-slate-700/80">
+        <p className="text-xs text-slate-400 font-medium">
+          Select a warehouse and destination, then calculate a route to view operations telemetry
+        </p>
       </div>
     );
   }
 
-  // If no path was found (e.g. eco-safe bypassed all links or isolated)
+  // 3. No safe path
   if (currentRoute.path === null) {
     return (
-      <div className="glass-panel border-rose-500/30 rounded-2xl p-5 text-slate-200">
-        <div className="flex items-start gap-3">
-          <div className="w-8 h-8 rounded-lg bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 font-bold shrink-0">
-            !
+      <div className="bg-amber-950/40 border border-amber-500/40 rounded-lg p-4 flex items-start gap-3.5 text-amber-200 backdrop-blur-md">
+        <div className="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0 font-bold">
+          !
+        </div>
+        <div>
+          <div className="text-sm font-semibold text-amber-300">
+            No safe path exists between these points at current AQI levels
           </div>
-          <div className="flex-1">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-rose-400">
-                Corridor Dispatch Halted
-              </h3>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 uppercase">
-                Zero Safe Paths
-              </span>
-            </div>
-            <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-              {currentRoute.reason ||
-                'All arterial road corridors to this destination traverse severe smog hotspots (AQI > 400). In strict Eco-Safe mode, rider safety protocol prohibits transit.'}
-            </p>
-            <div className="mt-3 flex items-center gap-2">
-              <span className="text-[11px] text-slate-400">Recommendation:</span>
-              <span className="text-[11px] font-medium text-slate-300 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700/60">
-                Switch to Risk-Calibrated Mode with adjusted α penalty
-              </span>
-            </div>
-          </div>
+          <p className="text-xs text-amber-200/80 mt-1 leading-relaxed">
+            {currentRoute.reason ||
+              'All arterial road corridors exceed the 400 AQI safety ceiling. Switch to Risk-Weighted mode to allow controlled dispatch with hazard compensation.'}
+          </p>
         </div>
       </div>
     );
   }
 
-  const path = currentRoute.path || [];
+  const pathLength = currentRoute.path ? currentRoute.path.length : 0;
+  const avgAqiPerNode = pathLength > 0 ? Math.round(calculatedAqiExposure / pathLength) : 0;
+  const riderImpact = currentRoute.riderImpact;
 
   return (
-    <div className="glass-panel rounded-2xl p-5 md:p-6 flex flex-col gap-4 text-slate-200">
-      {/* Title & Mode Indicator */}
-      <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
-        <div>
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
-            Dispatch Route Analytics
-          </h3>
-          <span className="text-[11px] font-mono text-slate-400 mt-0.5 block">
-            {source} ➔ {target}
+    <div className="flex flex-col gap-3">
+      {/* SLA Warning/Info banners */}
+      {currentRoute.slaRelaxed === true && (
+        <div className={`rounded-lg border p-3 text-xs flex items-start gap-2.5 ${
+          currentRoute.slaAchievable === false
+            ? 'bg-rose-950/40 border-rose-500/40 text-rose-200'
+            : 'bg-amber-950/30 border-amber-500/40 text-amber-200'
+        }`}>
+          <span className="text-base mt-0.5">
+            {currentRoute.slaAchievable === false ? '⚠' : 'ℹ'}
           </span>
-        </div>
-        <span
-          className={`text-[10px] font-mono uppercase font-semibold px-2.5 py-1 rounded-full border ${
-            mode === 'eco-safe'
-              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-              : mode === 'risk-weighted'
-              ? 'bg-purple-500/10 text-purple-400 border-purple-500/30'
-              : 'bg-blue-500/10 text-blue-400 border-blue-500/30'
-          }`}
-        >
-          {mode === 'eco-safe' ? 'Eco-Safe' : mode === 'risk-weighted' ? 'Risk-Calibrated' : 'Fastest'} Mode
-        </span>
-      </div>
-
-      {/* Grid of Key Performance Indicators */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {/* Metric 1: Corridor Distance */}
-        <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3 flex flex-col">
-          <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wider">
-            Corridor Distance
-          </span>
-          <div className="text-xl font-bold font-mono text-slate-100 mt-1 tabular-nums">
-            {currentRoute.totalDistance}{' '}
-            <span className="text-xs font-normal text-slate-400">km</span>
+          <div>
+            {currentRoute.slaAchievable === false ? (
+              <>
+                <div className="font-semibold text-rose-300">SLA cannot be met — fastest route selected</div>
+                <div className="mt-0.5 text-rose-200/80">
+                  Even the fastest route ({currentRoute.estimatedMinutes} min) exceeds your deadline.
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="font-semibold text-amber-300">
+                  SLA met via relaxed alpha (α = {currentRoute.effectiveAlpha})
+                </div>
+                <div className="mt-0.5 text-amber-200/80">
+                  Estimated {currentRoute.estimatedMinutes} min. Pollution penalty reduced to meet deadline.
+                </div>
+              </>
+            )}
           </div>
-          <span className="text-[10px] text-slate-500 mt-0.5">Physical network distance</span>
         </div>
+      )}
 
-        {/* Metric 2: Transit Waypoints */}
-        <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3 flex flex-col">
-          <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wider">
-            Corridor Hubs
+      {/* Rider cap warning */}
+      {riderImpact?.wouldExceedCap && (
+        <div className="bg-rose-950/40 border border-rose-500/50 rounded-lg px-3 py-2.5 text-xs text-rose-200 flex items-center gap-2">
+          <span>⚠</span>
+          <span>
+            This route would push <strong>{riderImpact.riderName}</strong> to{' '}
+            {riderImpact.newExposure?.toLocaleString()} AQI pts — exceeding daily cap of{' '}
+            {riderImpact.dailyCap?.toLocaleString()}.
           </span>
-          <div className="text-xl font-bold font-mono text-slate-100 mt-1 tabular-nums">
-            {path.length}{' '}
-            <span className="text-xs font-normal text-slate-400">nodes</span>
-          </div>
-          <span className="text-[10px] text-slate-500 mt-0.5">{path.length > 1 ? path.length - 1 : 0} road legs</span>
         </div>
+      )}
 
-        {/* Metric 3: Eco-Safe Bypassed Nodes OR Risk-Weighted Exposure */}
-        {mode === 'eco-safe' && (
-          <div className="bg-emerald-950/20 border border-emerald-800/30 rounded-xl p-3 flex flex-col">
-            <span className="text-[10px] font-medium text-emerald-400 uppercase tracking-wider">
-              Smog Bypassed
+      {/* Committed confirmation */}
+      {riderImpact?.committed && (
+        <div className="bg-emerald-950/40 border border-emerald-500/40 rounded-lg px-3 py-2.5 text-xs text-emerald-200 flex items-center gap-2">
+          <span>✓</span>
+          <span>
+            Route committed to <strong>{riderImpact.riderName}</strong>.{' '}
+            New exposure: {riderImpact.currentExposure?.toLocaleString()} AQI pts.
+          </span>
+        </div>
+      )}
+
+      {/* KPI Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {/* Distance */}
+        <div className="glass-card rounded-lg p-3.5 flex flex-col justify-between relative overflow-hidden group transition-all duration-200 hover:-translate-y-0.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+              Corridor Distance
             </span>
-            <div className="text-xl font-bold font-mono text-emerald-300 mt-1 tabular-nums">
-              {currentRoute.bypassedCount ?? 0}
-            </div>
-            <span className="text-[10px] text-emerald-400/60 mt-0.5">Hazardous zones avoided</span>
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
           </div>
-        )}
+          <div className="my-1.5">
+            <span className="text-2xl font-bold font-mono text-white tracking-tight">
+              {currentRoute.totalDistance != null ? currentRoute.totalDistance : '0'}
+            </span>
+            <span className="text-xs font-normal text-slate-400 ml-1">km</span>
+          </div>
+          <span className="text-[10px] text-slate-500 font-mono">
+            {pathLength > 1 ? `${pathLength - 1} road segments` : 'Direct leg'}
+          </span>
+        </div>
 
-        {mode === 'risk-weighted' && (
-          <div className="bg-purple-950/20 border border-purple-800/30 rounded-xl p-3 flex flex-col">
-            <span className="text-[10px] font-medium text-purple-400 uppercase tracking-wider">
+        {/* AQI Exposure */}
+        <div className="glass-card rounded-lg p-3.5 flex flex-col justify-between relative overflow-hidden group transition-all duration-200 hover:-translate-y-0.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
               AQI Exposure
             </span>
-            <div className="text-xl font-bold font-mono text-purple-300 mt-1 tabular-nums">
-              {currentRoute.totalAqiExposure}
-            </div>
-            <span className="text-[10px] text-purple-400/60 mt-0.5">Cumulative exposure score</span>
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                avgAqiPerNode > 400
+                  ? 'bg-rose-500'
+                  : avgAqiPerNode > 200
+                  ? 'bg-amber-500'
+                  : 'bg-emerald-500'
+              }`}
+            />
           </div>
-        )}
+          <div className="my-1.5">
+            <span className="text-2xl font-bold font-mono text-white tracking-tight">
+              {calculatedAqiExposure}
+            </span>
+            <span className="text-xs font-normal text-slate-400 ml-1">AQI pts</span>
+          </div>
+          <span className="text-[10px] text-slate-400 font-mono">
+            Avg: <strong className="text-slate-200">{avgAqiPerNode}</strong> AQI / station
+          </span>
+        </div>
 
-        {/* Metric 4: Hazard Pay (risk-weighted) OR Objective */}
-        {mode === 'risk-weighted' && (
-          <div className="bg-amber-950/20 border border-amber-800/30 rounded-xl p-3 flex flex-col">
-            <span className="text-[10px] font-medium text-amber-400 uppercase tracking-wider">
+        {/* Hazard Pay */}
+        <div className="glass-card rounded-lg p-3.5 flex flex-col justify-between relative overflow-hidden group transition-all duration-200 hover:-translate-y-0.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
               Rider Hazard Pay
             </span>
-            <div className="text-xl font-bold font-mono text-amber-300 mt-1 tabular-nums">
-              ₹{Number(currentRoute.hazardPay).toFixed(2)}
-            </div>
-            <span className="text-[10px] text-amber-400/60 mt-0.5">Health risk incentive</span>
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
           </div>
-        )}
-
-        {mode === 'fastest' && (
-          <div className="bg-blue-950/20 border border-blue-800/30 rounded-xl p-3 flex flex-col col-span-2">
-            <span className="text-[10px] font-medium text-blue-400 uppercase tracking-wider">
-              Routing Objective
-            </span>
-            <div className="text-xs font-semibold text-blue-200 mt-1">
-              Minimum Transit Time
-            </div>
-            <span className="text-[10px] text-blue-400/70 mt-0.5">
-              Direct arterial routing without pollution divergence
+          <div className="my-1.5">
+            <span className="text-2xl font-bold font-mono text-amber-300 tracking-tight">
+              ₹{calculatedHazardPay.toFixed(2)}
             </span>
           </div>
-        )}
-
-        {mode === 'eco-safe' && (
-          <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3 flex flex-col">
-            <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wider">
-              Safety Ceiling
-            </span>
-            <div className="text-xl font-bold font-mono text-emerald-400 mt-1 tabular-nums">
-              400 <span className="text-xs font-normal text-slate-400">AQI</span>
-            </div>
-            <span className="text-[10px] text-slate-500 mt-0.5">Maximum permitted index</span>
-          </div>
-        )}
-      </div>
-
-      {/* Corridor Sector Waypoint Ribbon */}
-      <div className="bg-slate-950/50 border border-slate-800/80 rounded-xl p-3">
-        <div className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-2 flex items-center justify-between">
-          <span>Active Corridor Checkpoints</span>
-          <span className="font-mono text-slate-500">{path.length} sectors</span>
+          <span className="text-[10px] text-slate-400 font-mono">
+            ₹1.50/km + AQI surge bonus
+          </span>
         </div>
-        <div className="flex flex-wrap items-center gap-1.5 text-xs">
-          {path.map((stopName, idx) => (
-            <div key={stopName} className="flex items-center gap-1.5">
-              <span
-                className={`px-2.5 py-1 rounded-md text-[11px] font-medium border ${
-                  idx === 0
-                    ? 'bg-blue-500/15 text-blue-300 border-blue-500/30'
-                    : idx === path.length - 1
-                    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                    : 'bg-slate-900 text-slate-300 border-slate-800'
-                }`}
-              >
-                {idx === 0 && 'Origin: '}
-                {idx === path.length - 1 && 'Drop-off: '}
-                {stopName}
-              </span>
-              {idx < path.length - 1 && (
-                <span className="text-slate-600 font-bold text-[10px]">➔</span>
-              )}
-            </div>
-          ))}
+
+        {/* Bypassed / Waypoints */}
+        <div className="glass-card rounded-lg p-3.5 flex flex-col justify-between relative overflow-hidden group transition-all duration-200 hover:-translate-y-0.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+              {mode === 'eco-safe' ? 'Bypassed Hotspots' : 'Route Waypoints'}
+            </span>
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+          </div>
+          <div className="my-1.5">
+            <span className="text-2xl font-bold font-mono text-emerald-300 tracking-tight">
+              {mode === 'eco-safe' ? calculatedBypassed : pathLength}
+            </span>
+            <span className="text-xs font-normal text-slate-400 ml-1">
+              {mode === 'eco-safe' ? 'excluded' : 'nodes'}
+            </span>
+          </div>
+          <span className="text-[10px] text-slate-400 font-mono">
+            {mode === 'eco-safe' ? 'Above 400 AQI threshold' : 'Active transit hubs'}
+          </span>
         </div>
       </div>
     </div>

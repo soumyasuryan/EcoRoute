@@ -22,19 +22,28 @@ export async function getAllNeighborhoods() {
              n.lat AS lat,
              n.lon AS lon,
              n.aqi AS aqi,
+             coalesce(n.aqiHistory, []) AS aqiHistory,
              n.zone AS zone,
              ('Warehouse' IN labels(n) OR n.isWarehouse = true) AS isWarehouse
       ORDER BY n.name ASC
     `);
 
-    return result.records.map((record) => ({
-      name: record.get('name'),
-      lat: toNativeNumber(record.get('lat')),
-      lon: toNativeNumber(record.get('lon')),
-      aqi: Math.round(toNativeNumber(record.get('aqi'))),
-      zone: record.get('zone') || 'Delhi NCR',
-      isWarehouse: Boolean(record.get('isWarehouse'))
-    }));
+    return result.records.map((record) => {
+      const rawHistory = record.get('aqiHistory');
+      const aqiHistory = Array.isArray(rawHistory)
+        ? rawHistory.map((v) => toNativeNumber(v))
+        : [];
+
+      return {
+        name: record.get('name'),
+        lat: toNativeNumber(record.get('lat')),
+        lon: toNativeNumber(record.get('lon')),
+        aqi: Math.round(toNativeNumber(record.get('aqi'))),
+        aqiHistory,
+        zone: record.get('zone') || 'Delhi NCR',
+        isWarehouse: Boolean(record.get('isWarehouse'))
+      };
+    });
   } finally {
     await session.close();
   }
@@ -217,17 +226,18 @@ export async function computeShortestPath({ source, target, mode = 'fastest', al
   let totalAqiExposure = null;
   let hazardPay = null;
 
-  if (mode === 'risk-weighted') {
-    // Sum of AQI values of all nodes along the path
-    totalAqiExposure = path.reduce((sum, name) => {
-      const node = nodesMap.get(name);
-      return sum + (node ? node.aqi : 0);
-    }, 0);
+  // Sum of AQI values of all nodes along the path
+  totalAqiExposure = path.reduce((sum, name) => {
+    const node = nodesMap.get(name);
+    return sum + (node ? node.aqi : 0);
+  }, 0);
 
-    // Hazard pay formula: totalAqiExposure * 0.5 (rupees)
-    // NOTE: This mock compensation formula is illustrative for the hackathon demo, not an official business figure.
-    hazardPay = Math.round(totalAqiExposure * 0.5 * 100) / 100;
-  }
+  // Practical delivery partner hazard compensation formula:
+  // Base distance incentive (₹1.50/km) + smog surge bonus (₹0.10 per AQI point above 150 baseline)
+  const avgAqi = path.length > 0 ? totalAqiExposure / path.length : 0;
+  const distanceComponent = totalPhysicalDist * 1.5;
+  const smogSurcharge = Math.max(0, avgAqi - 150) * 0.1;
+  hazardPay = Math.round((distanceComponent + smogSurcharge) * 100) / 100;
 
   return {
     path,
@@ -240,26 +250,43 @@ export async function computeShortestPath({ source, target, mode = 'fastest', al
 
 /**
  * 4. updateNodeAqi(name, newAqi)
- * Updates the AQI of a given neighborhood
+ * Updates the AQI of a given neighborhood, keeping up to 8 historical entries
  */
 export async function updateNodeAqi(name, newAqi) {
   const session = getSession();
   try {
     const roundedAqi = Math.round(Number(newAqi));
-    const result = await session.run(
+
+    // Read current AQI and historical trend
+    const currentRes = await session.run(
       `MATCH (n:Neighborhood {name: $name})
-       SET n.aqi = $newAqi
-       RETURN n.name AS name, n.aqi AS aqi`,
-      { name, newAqi: roundedAqi }
+       RETURN n.aqi AS aqi, coalesce(n.aqiHistory, []) AS aqiHistory`,
+      { name }
     );
 
-    if (result.records.length === 0) {
+    if (currentRes.records.length === 0) {
       throw new Error(`Neighborhood "${name}" not found.`);
     }
 
+    const currentAqiBeforeOverwrite = toNativeNumber(currentRes.records[0].get('aqi'));
+    const rawHistory = currentRes.records[0].get('aqiHistory');
+    const existingHistory = Array.isArray(rawHistory)
+      ? rawHistory.map((v) => toNativeNumber(v))
+      : [];
+
+    const newHistory = [...existingHistory, currentAqiBeforeOverwrite].slice(-8);
+
+    const result = await session.run(
+      `MATCH (n:Neighborhood {name: $name})
+       SET n.aqi = $newAqi, n.aqiHistory = $newHistory
+       RETURN n.name AS name, n.aqi AS aqi, n.aqiHistory AS aqiHistory`,
+      { name, newAqi: roundedAqi, newHistory }
+    );
+
     return {
       name: result.records[0].get('name'),
-      aqi: toNativeNumber(result.records[0].get('aqi'))
+      aqi: toNativeNumber(result.records[0].get('aqi')),
+      aqiHistory: newHistory
     };
   } finally {
     await session.close();
@@ -278,6 +305,7 @@ export async function getHighRiskNodes(threshold = 400) {
        WHERE n.aqi > $threshold
        RETURN n.name AS name,
               n.aqi AS aqi,
+              coalesce(n.aqiHistory, []) AS aqiHistory,
               n.lat AS lat,
               n.lon AS lon,
               ('Warehouse' IN labels(n) OR n.isWarehouse = true) AS isWarehouse
@@ -285,14 +313,228 @@ export async function getHighRiskNodes(threshold = 400) {
       { threshold: Number(threshold) }
     );
 
+    return result.records.map((record) => {
+      const rawHistory = record.get('aqiHistory');
+      const aqiHistory = Array.isArray(rawHistory)
+        ? rawHistory.map((v) => toNativeNumber(v))
+        : [];
+      return {
+        name: record.get('name'),
+        aqi: toNativeNumber(record.get('aqi')),
+        aqiHistory,
+        lat: toNativeNumber(record.get('lat')),
+        lon: toNativeNumber(record.get('lon')),
+        isWarehouse: Boolean(record.get('isWarehouse'))
+      };
+    });
+  } finally {
+    await session.close();
+  }
+}
+
+/**
+ * 6. getAllRiders()
+ * Returns all Rider nodes: { name, dailyCap, currentExposure }
+ */
+export async function getAllRiders() {
+  const session = getSession();
+  try {
+    const result = await session.run(`
+      MATCH (r:Rider)
+      RETURN r.name AS name,
+             r.dailyCap AS dailyCap,
+             coalesce(r.currentExposure, 0) AS currentExposure
+      ORDER BY r.name ASC
+    `);
+
     return result.records.map((record) => ({
       name: record.get('name'),
-      aqi: toNativeNumber(record.get('aqi')),
-      lat: toNativeNumber(record.get('lat')),
-      lon: toNativeNumber(record.get('lon')),
-      isWarehouse: Boolean(record.get('isWarehouse'))
+      dailyCap: toNativeNumber(record.get('dailyCap')),
+      currentExposure: toNativeNumber(record.get('currentExposure'))
     }));
   } finally {
     await session.close();
   }
+}
+
+/**
+ * 7. resetRiderExposure(name) & resetAllRiders()
+ */
+export async function resetRiderExposure(name) {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (r:Rider {name: $name})
+       SET r.currentExposure = 0
+       RETURN r.name AS name, r.dailyCap AS dailyCap, r.currentExposure AS currentExposure`,
+      { name }
+    );
+    if (result.records.length === 0) {
+      throw new Error(`Rider "${name}" not found.`);
+    }
+    return {
+      name: result.records[0].get('name'),
+      dailyCap: toNativeNumber(result.records[0].get('dailyCap')),
+      currentExposure: 0
+    };
+  } finally {
+    await session.close();
+  }
+}
+
+export async function resetAllRiders() {
+  const session = getSession();
+  try {
+    const result = await session.run(`
+      MATCH (r:Rider)
+      SET r.currentExposure = 0
+      RETURN r.name AS name, r.dailyCap AS dailyCap, r.currentExposure AS currentExposure
+      ORDER BY r.name ASC
+    `);
+    return result.records.map((record) => ({
+      name: record.get('name'),
+      dailyCap: toNativeNumber(record.get('dailyCap')),
+      currentExposure: 0
+    }));
+  } finally {
+    await session.close();
+  }
+}
+
+/**
+ * 8. assignRouteToRider(riderName, exposureAmount)
+ * Increments a rider's currentExposure by exposureAmount.
+ * ONLY called when route is actually committed.
+ */
+export async function assignRouteToRider(riderName, exposureAmount) {
+  const session = getSession();
+  try {
+    const amount = Math.round(Number(exposureAmount)) || 0;
+    const result = await session.run(
+      `MATCH (r:Rider {name: $riderName})
+       SET r.currentExposure = coalesce(r.currentExposure, 0) + $amount
+       RETURN r.name AS name, r.dailyCap AS dailyCap, r.currentExposure AS currentExposure`,
+      { riderName, amount }
+    );
+    if (result.records.length === 0) {
+      throw new Error(`Rider "${riderName}" not found.`);
+    }
+    return {
+      name: result.records[0].get('name'),
+      dailyCap: toNativeNumber(result.records[0].get('dailyCap')),
+      currentExposure: toNativeNumber(result.records[0].get('currentExposure'))
+    };
+  } finally {
+    await session.close();
+  }
+}
+
+/**
+ * 9. computeComparisonRoutes({ source, target, alpha })
+ * Calls computeShortestPath three times in parallel (fastest, eco-safe, risk-weighted)
+ */
+export async function computeComparisonRoutes({ source, target, alpha = 1.0 }) {
+  const numAlpha = parseFloat(alpha) || 1.0;
+  const [fastest, ecoSafe, riskWeighted] = await Promise.all([
+    computeShortestPath({ source, target, mode: 'fastest', alpha: numAlpha }),
+    computeShortestPath({ source, target, mode: 'eco-safe', alpha: numAlpha }),
+    computeShortestPath({ source, target, mode: 'risk-weighted', alpha: numAlpha })
+  ]);
+  return {
+    fastest,
+    ecoSafe,
+    riskWeighted
+  };
+}
+
+/**
+ * 10. computeSlaAwareRoute({ source, target, maxDeliveryMinutes, initialAlpha, avgSpeedKmph })
+ * Computes risk-weighted path, and steps alpha down until time budget is met or reaches 0.
+ */
+export async function computeSlaAwareRoute({
+  source,
+  target,
+  maxDeliveryMinutes,
+  initialAlpha = 1.0,
+  avgSpeedKmph = 25
+}) {
+  const targetMinutes = Number(maxDeliveryMinutes);
+  let curAlpha = Math.round(Number(initialAlpha) * 10) / 10;
+
+  // 1. Compute at initialAlpha
+  const initialResult = await computeShortestPath({
+    source,
+    target,
+    mode: 'risk-weighted',
+    alpha: curAlpha
+  });
+
+  if (!initialResult.path) {
+    return {
+      ...initialResult,
+      effectiveAlpha: null,
+      slaRelaxed: false,
+      slaAchievable: false,
+      estimatedMinutes: null
+    };
+  }
+
+  const initialEstimatedMinutes = Math.round(((initialResult.totalDistance || 0) / avgSpeedKmph) * 60 * 10) / 10;
+
+  if (initialEstimatedMinutes <= targetMinutes) {
+    return {
+      ...initialResult,
+      effectiveAlpha: curAlpha,
+      slaRelaxed: false,
+      slaAchievable: true,
+      estimatedMinutes: initialEstimatedMinutes
+    };
+  }
+
+  // 2. Step alpha down by 0.2 at a time
+  while (curAlpha > 0.05) {
+    curAlpha = Math.round((curAlpha - 0.2) * 10) / 10;
+    if (curAlpha < 0) curAlpha = 0;
+
+    const res = await computeShortestPath({
+      source,
+      target,
+      mode: 'risk-weighted',
+      alpha: curAlpha
+    });
+
+    if (res.path) {
+      const estMins = Math.round(((res.totalDistance || 0) / avgSpeedKmph) * 60 * 10) / 10;
+      if (estMins <= targetMinutes) {
+        return {
+          ...res,
+          effectiveAlpha: curAlpha,
+          slaRelaxed: true,
+          slaAchievable: true,
+          estimatedMinutes: estMins
+        };
+      }
+    }
+
+    if (curAlpha === 0) break;
+  }
+
+  // 3. If still not met at alpha = 0, fall back to plain "fastest"
+  const fastestResult = await computeShortestPath({
+    source,
+    target,
+    mode: 'fastest'
+  });
+
+  const fastestEstimatedMinutes = fastestResult.totalDistance != null
+    ? Math.round((fastestResult.totalDistance / avgSpeedKmph) * 60 * 10) / 10
+    : null;
+
+  return {
+    ...fastestResult,
+    effectiveAlpha: null,
+    slaRelaxed: true,
+    slaAchievable: false,
+    estimatedMinutes: fastestEstimatedMinutes
+  };
 }
