@@ -101,133 +101,154 @@ export default function MapView({
     riskWeighted: null
   });
 
-  // Extract raw waypoint coordinates for current route
-  const currentPathWaypoints = useMemo(() => {
-    if (!currentRoute?.path || currentRoute.path.length < 2) return [];
-    return currentRoute.path.map((name) => coordMap.get(name)).filter(Boolean);
-  }, [currentRoute?.path, coordMap]);
+  // Helper to score an OSRM route geometry against spatial neighborhood AQI
+  const scoreRouteGeometry = useCallback(
+    (routeGeom) => {
+      const coords = routeGeom.coordinates || [];
+      if (coords.length === 0) return { avgAqi: 150, maxAqi: 150, distKm: (routeGeom.distance || 0) / 1000 };
 
-  // Fetch real road geometry for single route along its actual graph waypoints
+      let totalAqi = 0;
+      let maxAqi = 0;
+      const step = Math.max(1, Math.floor(coords.length / 40));
+      let samples = 0;
+
+      for (let i = 0; i < coords.length; i += step) {
+        const [lon, lat] = coords[i];
+        let minDistSq = Infinity;
+        let localAqi = 150;
+
+        for (const n of neighborhoods) {
+          const distSq = (n.lat - lat) ** 2 + (n.lon - lon) ** 2;
+          if (distSq < minDistSq) {
+            minDistSq = distSq;
+            localAqi = n.aqi;
+          }
+        }
+
+        totalAqi += localAqi;
+        if (localAqi > maxAqi) maxAqi = localAqi;
+        samples++;
+      }
+
+      const avgAqi = samples > 0 ? totalAqi / samples : 150;
+      const distKm = (routeGeom.distance || 0) / 1000;
+      return { avgAqi, maxAqi, distKm };
+    },
+    [neighborhoods]
+  );
+
+  // Fetch real practical road corridors between Origin and Destination
   useEffect(() => {
-    if (compareMode || currentPathWaypoints.length < 2) {
+    if (!sourceCoord || !targetCoord || sourceName === targetName) {
       setSingleRoadCoords([]);
+      setCompareRoadGeometries({ fastest: null, ecoSafe: null, riskWeighted: null });
       return;
     }
 
-    const coordsStr = currentPathWaypoints.map(([lat, lon]) => `${lon},${lat}`).join(';');
-    const cacheKey = `single-${coordsStr}`;
+    const cacheKey = `od-${sourceName}-${targetName}`;
+    let isCancelled = false;
+
+    const computeAndApplyRoutes = (candidateRoutes) => {
+      if (!candidateRoutes || candidateRoutes.length === 0) return;
+
+      const scored = candidateRoutes.map((r) => {
+        const stats = scoreRouteGeometry(r.geometry);
+        const roadCoords = r.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+        return { route: r, roadCoords, ...stats };
+      });
+
+      // 1. Fastest: strictly shortest distance
+      const fastestChoice = [...scored].sort((a, b) => a.distKm - b.distKm)[0];
+
+      // 2. Eco-Safe: strictly avoids >400 severe hotspots, lowest peak AQI
+      const ecoSafeChoice = [...scored].sort((a, b) => {
+        if (a.maxAqi !== b.maxAqi) return a.maxAqi - b.maxAqi;
+        return a.avgAqi - b.avgAqi;
+      })[0];
+
+      // 3. Risk-Calibrated: balanced cost with alpha
+      const alphaVal = Number(currentRoute?.alpha) || 1.0;
+      const riskChoice = [...scored].sort((a, b) => {
+        const costA = a.distKm + (alphaVal * a.avgAqi) / 100;
+        const costB = b.distKm + (alphaVal * b.avgAqi) / 100;
+        return costA - costB;
+      })[0];
+
+      if (isCancelled) return;
+
+      // Set compare mode geometries
+      setCompareRoadGeometries({
+        fastest: fastestChoice?.roadCoords || [sourceCoord, targetCoord],
+        ecoSafe: ecoSafeChoice?.roadCoords || [sourceCoord, targetCoord],
+        riskWeighted: riskChoice?.roadCoords || [sourceCoord, targetCoord]
+      });
+
+      // Set active single route geometry based on current mode
+      if (mode === 'fastest') {
+        setSingleRoadCoords(fastestChoice?.roadCoords || [sourceCoord, targetCoord]);
+      } else if (mode === 'eco-safe') {
+        setSingleRoadCoords(ecoSafeChoice?.roadCoords || [sourceCoord, targetCoord]);
+      } else {
+        setSingleRoadCoords(riskChoice?.roadCoords || [sourceCoord, targetCoord]);
+      }
+    };
 
     if (roadGeometryCache.has(cacheKey)) {
-      setSingleRoadCoords(roadGeometryCache.get(cacheKey));
+      computeAndApplyRoutes(roadGeometryCache.get(cacheKey));
       return;
     }
 
-    let isCancelled = false;
-    const url = `https://router.project-osrm.org/route/v1/driving/${coordsStr}?overview=full&geometries=geojson`;
+    const url = `https://router.project-osrm.org/route/v1/driving/${sourceCoord[1]},${sourceCoord[0]};${targetCoord[1]},${targetCoord[0]}?overview=full&geometries=geojson&alternatives=true`;
 
     fetch(url)
       .then((res) => res.json())
       .then((data) => {
         if (isCancelled) return;
-        if (data.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
-          const roadCoords = data.routes[0].geometry.coordinates.map(([lon, lat]) => [lat, lon]);
-          roadGeometryCache.set(cacheKey, roadCoords);
-          setSingleRoadCoords(roadCoords);
+        if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+          roadGeometryCache.set(cacheKey, data.routes);
+          computeAndApplyRoutes(data.routes);
         } else {
-          setSingleRoadCoords(currentPathWaypoints);
+          setSingleRoadCoords([sourceCoord, targetCoord]);
+          setCompareRoadGeometries({
+            fastest: [sourceCoord, targetCoord],
+            ecoSafe: [sourceCoord, targetCoord],
+            riskWeighted: [sourceCoord, targetCoord]
+          });
         }
       })
       .catch((err) => {
         if (!isCancelled) {
-          console.warn('OSRM road geometry fallback to waypoints:', err);
-          setSingleRoadCoords(currentPathWaypoints);
+          console.warn('OSRM route fetch fallback:', err);
+          setSingleRoadCoords([sourceCoord, targetCoord]);
+          setCompareRoadGeometries({
+            fastest: [sourceCoord, targetCoord],
+            ecoSafe: [sourceCoord, targetCoord],
+            riskWeighted: [sourceCoord, targetCoord]
+          });
         }
       });
 
     return () => {
       isCancelled = true;
     };
-  }, [compareMode, currentPathWaypoints]);
-
-  // Fetch real road geometry for each of the 3 compare routes
-  useEffect(() => {
-    if (!compareMode || !comparisonResult) {
-      setCompareRoadGeometries({ fastest: null, ecoSafe: null, riskWeighted: null });
-      return;
-    }
-
-    let isCancelled = false;
-    const modes = [
-      { key: 'fastest', data: comparisonResult.fastest },
-      { key: 'ecoSafe', data: comparisonResult.ecoSafe },
-      { key: 'riskWeighted', data: comparisonResult.riskWeighted }
-    ];
-
-    modes.forEach(({ key, data }) => {
-      if (!data?.path || data.path.length < 2) {
-        if (!isCancelled) {
-          setCompareRoadGeometries((prev) => ({ ...prev, [key]: null }));
-        }
-        return;
-      }
-
-      const waypoints = data.path.map((name) => coordMap.get(name)).filter(Boolean);
-      if (waypoints.length < 2) return;
-
-      const coordsStr = waypoints.map(([lat, lon]) => `${lon},${lat}`).join(';');
-      const cacheKey = `compare-${key}-${coordsStr}`;
-
-      if (roadGeometryCache.has(cacheKey)) {
-        if (!isCancelled) {
-          setCompareRoadGeometries((prev) => ({
-            ...prev,
-            [key]: roadGeometryCache.get(cacheKey)
-          }));
-        }
-        return;
-      }
-
-      const url = `https://router.project-osrm.org/route/v1/driving/${coordsStr}?overview=full&geometries=geojson`;
-
-      fetch(url)
-        .then((res) => res.json())
-        .then((resp) => {
-          if (isCancelled) return;
-          if (resp.code === 'Ok' && resp.routes?.[0]?.geometry?.coordinates) {
-            const roadCoords = resp.routes[0].geometry.coordinates.map(([lon, lat]) => [lat, lon]);
-            roadGeometryCache.set(cacheKey, roadCoords);
-            setCompareRoadGeometries((prev) => ({ ...prev, [key]: roadCoords }));
-          } else {
-            setCompareRoadGeometries((prev) => ({ ...prev, [key]: waypoints }));
-          }
-        })
-        .catch(() => {
-          if (!isCancelled) {
-            setCompareRoadGeometries((prev) => ({ ...prev, [key]: waypoints }));
-          }
-        });
-    });
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [compareMode, comparisonResult, coordMap]);
+  }, [sourceCoord, targetCoord, sourceName, targetName, mode, currentRoute?.alpha, scoreRouteGeometry]);
 
   // Active single-route geometry
   const activeGeometry = useMemo(() => {
     if (singleRoadCoords.length > 0) return singleRoadCoords;
-    return currentPathWaypoints;
-  }, [singleRoadCoords, currentPathWaypoints]);
+    if (sourceCoord && targetCoord) return [sourceCoord, targetCoord];
+    return [];
+  }, [singleRoadCoords, sourceCoord, targetCoord]);
 
   // Compare mode active geometries
   const activeCompareGeometries = useMemo(() => {
-    if (!compareMode || !comparisonResult) return {};
+    if (!compareMode) return {};
     return {
-      fastest: compareRoadGeometries.fastest || (comparisonResult.fastest?.path ? comparisonResult.fastest.path.map((n) => coordMap.get(n)).filter(Boolean) : null),
-      ecoSafe: compareRoadGeometries.ecoSafe || (comparisonResult.ecoSafe?.path ? comparisonResult.ecoSafe.path.map((n) => coordMap.get(n)).filter(Boolean) : null),
-      riskWeighted: compareRoadGeometries.riskWeighted || (comparisonResult.riskWeighted?.path ? comparisonResult.riskWeighted.path.map((n) => coordMap.get(n)).filter(Boolean) : null)
+      fastest: compareRoadGeometries.fastest || (sourceCoord && targetCoord ? [sourceCoord, targetCoord] : null),
+      ecoSafe: compareRoadGeometries.ecoSafe || (sourceCoord && targetCoord ? [sourceCoord, targetCoord] : null),
+      riskWeighted: compareRoadGeometries.riskWeighted || (sourceCoord && targetCoord ? [sourceCoord, targetCoord] : null)
     };
-  }, [compareMode, comparisonResult, compareRoadGeometries, coordMap]);
+  }, [compareMode, compareRoadGeometries, sourceCoord, targetCoord]);
 
   const allCompareCoords = useMemo(() => {
     return Object.values(activeCompareGeometries).filter(Boolean).flat();
