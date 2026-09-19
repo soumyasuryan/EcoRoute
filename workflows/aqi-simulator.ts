@@ -1,4 +1,3 @@
-import { task, type TaskContext } from '@renderinc/sdk/workflows';
 import neo4j, { type Driver, type Session } from 'neo4j-driver';
 import fs from 'fs';
 import path from 'path';
@@ -19,7 +18,7 @@ export interface SimulationResult {
 }
 
 /**
- * Helper to load environment variables from .env.local if running locally or outside Next.js
+ * Load environment variables from .env.local if not already set in process.env
  */
 function loadEnvFallback(): void {
   if (process.env.NEO4J_URI && process.env.NEO4J_PASSWORD) return;
@@ -49,7 +48,7 @@ function loadEnvFallback(): void {
 }
 
 /**
- * Initializes a Neo4j driver using the configured environment variables
+ * Get Neo4j Driver instance
  */
 function getNeo4jDriver(): Driver {
   loadEnvFallback();
@@ -60,7 +59,7 @@ function getNeo4jDriver(): Driver {
 
   if (!uri || !password) {
     throw new Error(
-      'Missing Neo4j connection details. Set NEO4J_URI, NEO4J_USER (or NEO4J_USERNAME), and NEO4J_PASSWORD.'
+      'Missing Neo4j connection credentials. Ensure NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD are set.'
     );
   }
 
@@ -68,22 +67,18 @@ function getNeo4jDriver(): Driver {
 }
 
 /**
- * Core simulation logic:
- * 1. Fetches all non-warehouse neighborhood nodes from Neo4j
- * 2. Randomly selects 1-2 neighborhoods
+ * Executes a single simulation step:
+ * 1. Fetches all non-warehouse neighborhoods from Neo4j
+ * 2. Selects 1–2 neighborhoods at random
  * 3. Updates their AQI:
- *    - ~75% of runs: normal winter AQI (100 - 250)
- *    - ~25% of runs (1 in 4): winter smog spike (350 - 500)
- * 4. Logs before/after values with timestamps for visibility in Render Workflow logs
+ *    - ~75% normal winter AQI (100–250)
+ *    - ~25% (1 in 4 runs) winter smog spike (350–500)
+ * 4. Logs before/after values with timestamps
  */
-export async function executeAqiSimulation(): Promise<SimulationResult> {
-  const driver = getNeo4jDriver();
-  const session: Session = driver.session();
+export async function runAqiSimulation(driver?: Driver): Promise<SimulationResult> {
+  const localDriver = driver || getNeo4jDriver();
+  const session: Session = localDriver.session();
   const timestamp = new Date().toISOString();
-
-  console.log(`\n======================================================`);
-  console.log(`[Render Workflow: aqi-simulator] Run started at ${timestamp}`);
-  console.log(`======================================================`);
 
   try {
     // 1. Fetch non-warehouse neighborhoods
@@ -99,7 +94,7 @@ export async function executeAqiSimulation(): Promise<SimulationResult> {
     }));
 
     if (neighborhoods.length === 0) {
-      console.warn('[Render Workflow: aqi-simulator] No non-warehouse neighborhoods found in Neo4j.');
+      console.warn('⚠️ No non-warehouse neighborhoods found in Neo4j database.');
       return {
         success: false,
         timestamp,
@@ -109,28 +104,28 @@ export async function executeAqiSimulation(): Promise<SimulationResult> {
       };
     }
 
-    // 2. Pick 1 or 2 neighborhoods at random
+    // 2. Select 1 or 2 random neighborhoods
     const countToPick = Math.random() < 0.5 ? 1 : 2;
     const shuffled = [...neighborhoods].sort(() => 0.5 - Math.random());
     const selected = shuffled.slice(0, countToPick);
 
-    // 3. Determine if this run contains a smog spike (approx 1 in 4 runs = 25%)
+    // 3. Determine if this run creates a smog spike (about 1 in 4 runs = 25%)
     const isSpikeRun = Math.random() < 0.25;
     const updatedNeighborhoods: UpdatedNeighborhood[] = [];
 
+    console.log(`\n------------------------------------------------------`);
+    console.log(`[AQI Workflow] Iteration at ${new Date().toLocaleTimeString()} (${timestamp})`);
     console.log(
-      `[Render Workflow: aqi-simulator] Mode: ${
-        isSpikeRun ? '⚠️ HIGH-SMOG SPIKE EVENT (1 in 4 run)' : '🍃 NORMAL AQI FLUCTUATION'
+      `[AQI Workflow] Status: ${
+        isSpikeRun ? '🚨 SMOG SPIKE EVENT (1 in 4 run)' : '🍃 NORMAL AQI FLUCTUATION'
       }`
     );
 
     for (const place of selected) {
-      // If spike run, assign severe 350-500; otherwise normal 100-250
       const newAqi = isSpikeRun
         ? Math.floor(Math.random() * (500 - 350 + 1)) + 350
         : Math.floor(Math.random() * (250 - 100 + 1)) + 100;
 
-      // Update node in Neo4j
       await session.run(
         `MATCH (n:Neighborhood {name: $name})
          SET n.aqi = $newAqi
@@ -147,15 +142,14 @@ export async function executeAqiSimulation(): Promise<SimulationResult> {
       });
 
       console.log(
-        `[Render Workflow: aqi-simulator] 📍 ${place.name}: AQI ${place.aqi} ➔ ${newAqi} ${
-          isSpike ? '🚨 [SPIKE EVENT]' : '✅ [MODERATE]'
+        `  📍 ${place.name.padEnd(20)} AQI ${String(place.aqi).padStart(3)} ➔ ${String(newAqi).padStart(3)} ${
+          isSpike ? '⚠️ [SEVERE SPIKE]' : '✅ [MODERATE]'
         }`
       );
     }
 
-    console.log(
-      `[Render Workflow: aqi-simulator] Completed successfully. Updated ${updatedNeighborhoods.length} neighborhood(s).\n`
-    );
+    console.log(`[AQI Workflow] Successfully committed to Neo4j AuraDB.`);
+    console.log(`------------------------------------------------------`);
 
     return {
       success: true,
@@ -164,46 +158,80 @@ export async function executeAqiSimulation(): Promise<SimulationResult> {
       updatedCount: updatedNeighborhoods.length,
       updatedNeighborhoods
     };
-  } catch (err: any) {
-    console.error('[Render Workflow: aqi-simulator] Execution failed:', err.message || err);
-    throw err;
   } finally {
     await session.close();
-    await driver.close();
+    if (!driver) {
+      await localDriver.close();
+    }
   }
 }
 
 /**
- * Official Render Workflow Task Definition using @renderinc/sdk
+ * Continuous Background Daemon loop
  */
-export const aqiSimulatorTask = task(
-  {
-    name: 'aqi-simulator',
-    plan: 'starter',
-    timeoutSeconds: 120,
-    retry: {
-      maxRetries: 3,
-      waitDurationMs: 2000,
-      backoffScaling: 1.5
-    }
-  },
-  async function aqiSimulator(ctx: TaskContext): Promise<SimulationResult> {
-    console.log('[Render Workflow Task: aqi-simulator] Invoked via Render Workflow engine');
-    return await executeAqiSimulation();
-  }
-);
+async function startDaemon(): Promise<void> {
+  const driver = getNeo4jDriver();
 
-// Fallback: If executed directly via CLI, run simulation immediately
-if (process.argv[1] && process.argv[1].includes('aqi-simulator')) {
-  executeAqiSimulation()
-    .then((result) => {
-      console.log('[CLI Output Result]:', JSON.stringify(result, null, 2));
+  // Read interval from env or default to 60 seconds (1 minute)
+  const intervalSeconds = parseInt(process.env.INTERVAL_SECONDS || '60', 10);
+  const intervalMs = intervalSeconds * 1000;
+
+  console.log(`======================================================`);
+  console.log(`🌱 EcoRoute Background AQI Simulator Daemon Started`);
+  console.log(`⚡ Connected to: ${process.env.NEO4J_URI || 'Neo4j Aura'}`);
+  console.log(`⏱️ Interval: Every ${intervalSeconds} seconds`);
+  console.log(`Press Ctrl+C at any time to gracefully stop.`);
+  console.log(`======================================================`);
+
+  // Handle graceful exit
+  let isRunning = true;
+  const shutdown = async () => {
+    if (!isRunning) return;
+    isRunning = false;
+    console.log('\n🛑 Stopping AQI simulator daemon gracefully...');
+    await driver.close();
+    console.log('🔒 Neo4j connection closed. Goodbye!\n');
+    process.exit(0);
+  };
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+
+  // Initial immediate run
+  try {
+    await runAqiSimulation(driver);
+  } catch (err: any) {
+    console.error('Initial simulation error:', err.message || err);
+  }
+
+  // Periodic loop
+  while (isRunning) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    if (!isRunning) break;
+    try {
+      await runAqiSimulation(driver);
+    } catch (err: any) {
+      console.error('Simulation error:', err.message || err);
+    }
+  }
+}
+
+// Entrypoint execution
+const isOnce = process.argv.includes('--once');
+
+if (isOnce) {
+  runAqiSimulation()
+    .then((res) => {
+      console.log('Single-run completed:', JSON.stringify(res, null, 2));
       process.exit(0);
     })
     .catch((err) => {
-      console.error('[CLI Error]:', err);
+      console.error('Single-run failed:', err);
       process.exit(1);
     });
+} else {
+  startDaemon().catch((err) => {
+    console.error('Daemon startup error:', err);
+    process.exit(1);
+  });
 }
-
-export default aqiSimulatorTask;

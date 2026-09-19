@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
   MapContainer,
   TileLayer,
@@ -11,6 +11,9 @@ import {
   useMap
 } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
+
+// In-memory cache for fetched road geometries to eliminate re-fetching
+const roadGeometryCache = new Map();
 
 // Helper component to auto-pan or fit bounds if route changes
 function RouteBounds({ routeCoords }) {
@@ -49,6 +52,58 @@ export default function MapView({
     .map((name) => coordMap.get(name))
     .filter(Boolean);
 
+  // State to hold high-resolution, turn-by-turn road geometry following actual streets
+  const [roadGeometry, setRoadGeometry] = useState([]);
+  const [isLoadingRoads, setIsLoadingRoads] = useState(false);
+
+  // Query OSRM OpenStreetMap routing service for actual street-level geometry
+  useEffect(() => {
+    if (!currentRoute?.path || currentRoute.path.length < 2) {
+      setRoadGeometry([]);
+      return;
+    }
+
+    const pathKey = currentRoute.path.join('->');
+    if (roadGeometryCache.has(pathKey)) {
+      setRoadGeometry(roadGeometryCache.get(pathKey));
+      return;
+    }
+
+    // Immediately display waypoint centroids as fallback
+    const directCoords = currentRoute.path.map((name) => coordMap.get(name)).filter(Boolean);
+    setRoadGeometry(directCoords);
+    setIsLoadingRoads(true);
+
+    // OSRM expects coordinates in "lon,lat" format separated by ";"
+    const osrmCoords = directCoords.map(([lat, lon]) => `${lon},${lat}`).join(';');
+    const url = `https://router.project-osrm.org/route/v1/driving/${osrmCoords}?overview=full&geometries=geojson`;
+
+    let isCancelled = false;
+
+    fetch(url)
+      .then((res) => res.json())
+      .then((data) => {
+        if (!isCancelled && data.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
+          // Convert GeoJSON [lon, lat] back to Leaflet [lat, lon]
+          const realRoadCoords = data.routes[0].geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+          roadGeometryCache.set(pathKey, realRoadCoords);
+          setRoadGeometry(realRoadCoords);
+        }
+      })
+      .catch((err) => {
+        console.warn('Could not fetch OSRM road geometry, using fallback coordinates:', err.message);
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setIsLoadingRoads(false);
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentRoute?.path]);
+
   // Helper to determine AQI color status
   const getAqiColor = (aqi) => {
     if (aqi < 200) return '#10b981'; // Green: Good / Moderate
@@ -69,19 +124,33 @@ export default function MapView({
     return '#0284c7'; // Blue for Fastest
   };
 
+  // Clean up Leaflet DOM container state during HMR/re-renders
+  useEffect(() => {
+    return () => {
+      if (typeof document !== 'undefined') {
+        const container = document.getElementById('ecoroute-map-container');
+        if (container) {
+          container._leaflet_id = null;
+        }
+      }
+    };
+  }, []);
+
   return (
     <div className="relative w-full h-full min-h-[500px] rounded-2xl overflow-hidden shadow-2xl border border-slate-700/60 bg-slate-950">
       <MapContainer
+        id="ecoroute-map-container"
         center={delhiCenter}
         zoom={11}
         scrollWheelZoom={true}
         className="w-full h-full z-0"
         style={{ height: '100%', minHeight: '520px', width: '100%', background: '#0f172a' }}
       >
-        {/* OpenStreetMap Dark / Standard Tiles */}
+        {/* Standard OpenStreetMap Tiles (No API key needed) */}
         <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-          url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          maxZoom={19}
         />
 
         {/* Faint network roads to visualize city connectivity */}
@@ -91,40 +160,42 @@ export default function MapView({
           if (!c1 || !c2) return null;
           return (
             <Polyline
-              key={`road-${idx}`}
+              key={`road-${road.source}-${road.target}-${idx}`}
               positions={[c1, c2]}
               pathOptions={{
-                color: '#94a3b8',
+                color: '#64748b',
                 weight: 1.5,
-                opacity: 0.25,
+                opacity: 0.35,
                 dashArray: '3, 6'
               }}
             />
           );
         })}
 
-        {/* Highlighted Active Route Polyline */}
+        {/* Highlighted Active Route Polyline following real road network */}
         {routeCoords.length > 1 && (
           <>
             {/* Route glow outline */}
             <Polyline
-              positions={routeCoords}
+              key={`route-glow-${(currentRoute?.path || []).join('-')}-${mode}-${currentRoute?.totalDistance}-${roadGeometry.length}`}
+              positions={roadGeometry.length > 0 ? roadGeometry : routeCoords}
               pathOptions={{
                 color: getRouteColor(),
                 weight: 8,
-                opacity: 0.4
+                opacity: 0.45
               }}
             />
-            {/* Sharp core polyline */}
+            {/* Sharp core polyline following real street curves and highways */}
             <Polyline
-              positions={routeCoords}
+              key={`route-core-${(currentRoute?.path || []).join('-')}-${mode}-${currentRoute?.totalDistance}-${roadGeometry.length}`}
+              positions={roadGeometry.length > 0 ? roadGeometry : routeCoords}
               pathOptions={{
                 color: getRouteColor(),
-                weight: 4,
+                weight: 4.5,
                 opacity: 0.95
               }}
             />
-            <RouteBounds routeCoords={routeCoords} />
+            <RouteBounds routeCoords={roadGeometry.length > 0 ? roadGeometry : routeCoords} />
           </>
         )}
 
@@ -209,6 +280,14 @@ export default function MapView({
           );
         })}
       </MapContainer>
+
+      {/* Top Right Street Navigation Badge */}
+      <div className="absolute top-4 right-4 z-[1000] bg-slate-900/90 backdrop-blur-md px-3 py-1.5 rounded-xl border border-slate-700/60 shadow-lg text-[11px] text-slate-200 flex items-center gap-2">
+        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span className="font-semibold text-slate-300">
+          {isLoadingRoads ? '🛣️ Tracing Delhi NCR Roads...' : '🛣️ Street-Level Road Network'}
+        </span>
+      </div>
 
       {/* Map Legend Overlay */}
       <div className="absolute bottom-4 right-4 z-[1000] bg-slate-900/90 backdrop-blur-md px-3.5 py-2.5 rounded-xl border border-slate-700/60 shadow-lg text-xs text-slate-200">

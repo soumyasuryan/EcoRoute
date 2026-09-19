@@ -1,109 +1,93 @@
-# EcoRoute Background AQI Simulator (Render Workflows)
+# EcoRoute Background AQI Simulator Workflow
 
-This directory contains a background task built with the **Render Workflows TypeScript SDK** (`@renderinc/sdk`) that periodically simulates dynamic winter Air Quality Index (AQI) fluctuations and smog spikes across Delhi NCR neighborhoods in Neo4j AuraDB, independent of the Next.js frontend application.
+This workflow simulates dynamic winter Air Quality Index (AQI) fluctuations and winter smog spikes across Delhi NCR neighborhoods in Neo4j AuraDB, independent of the Next.js frontend application.
 
----
-
-## Architecture & Task Logic
-
-- **Task Definition (`aqi-simulator.ts`)**:
-  - Registered as a Render Workflow task using `@renderinc/sdk/workflows`: `task({ name: 'aqi-simulator', plan: 'starter', timeoutSeconds: 120, retry: { maxRetries: 3 } }, ...)`.
-  - Directly queries Neo4j AuraDB for all non-warehouse neighborhood nodes (`MATCH (n:Neighborhood) WHERE NOT 'Warehouse' IN labels(n) ...`).
-  - Randomly selects 1–2 neighborhoods.
-  - Sets their AQI:
-    - **Normal run (~75% of runs)**: Updates to moderate/poor winter AQI between **100 and 250**.
-    - **Spike run (~25% of runs / 1 in 4)**: Simulates a severe winter smog spike between **350 and 500** to trigger dynamic rerouting events.
-  - Emits formatted telemetry logs for visibility in Render's workflow logs.
+It is completely free to run and does not require paid platforms like Render Workflows.
 
 ---
 
-## Scheduling Mechanism in Render Workflows
+## What the Simulator Does
 
-> [!NOTE]
-> **Render Workflows (Public Beta)** executes distributed, durable, stateful tasks that provision and scale compute dynamically. 
-> Unlike standalone cron daemons, Render Workflows does not expose an in-file cron expression syntax inside `task(...)`. Instead, recurring tasks are scheduled through one of two official Render mechanisms:
->
-> 1. **Render Cron Job (Recommended)**: A companion lightweight Cron Job service configured on a cron cadence (e.g. `*/2 * * * *` for every 2 minutes) that invokes the task runner (`npm run trigger` or `npx tsx trigger.ts`).
-> 2. **Render Workflows Run API**: An external scheduler (e.g. GitHub Actions or HTTP cron webhook) calling `POST https://api.render.com/v1/workflows/tasks/{taskSlug}/runs` with a `RENDER_API_KEY`.
+Each iteration:
+1. Connects to Neo4j AuraDB using `neo4j-driver` (`NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`).
+2. Fetches all non-warehouse neighborhood nodes.
+3. Randomly selects 1–2 neighborhoods.
+4. Updates their AQI values:
+   - **Normal run (~75% of runs)**: Updates to moderate/poor winter AQI between **100 and 250**.
+   - **Spike run (~25% / 1 in 4 runs)**: Simulates a severe winter smog spike between **350 and 500** to trigger rerouting events.
+5. Commits changes to the live graph database with formatted timestamped logs.
 
 ---
 
-## Local Development & Testing
+## Option 1: Local Background Daemon (Recommended for Dev & Demos)
 
-You can run the simulation locally using `tsx`:
+You can run the simulator as a background daemon on your machine while developing or presenting demos.
 
 ```bash
 cd workflows
 npm install
 
-# Run the task directly:
+# Start continuous daemon (runs every 60s by default):
 npm start
-
-# Or test the trigger script:
-npm run trigger
 ```
 
-Example output:
+### Customizing the Interval
+You can set `INTERVAL_SECONDS` to any frequency:
+```bash
+# In PowerShell:
+$env:INTERVAL_SECONDS="30"; npm start
+
+# In Bash / Mac / Linux:
+INTERVAL_SECONDS=30 npm start
+```
+
+### Single-Shot Execution
+To execute a single update and exit immediately:
+```bash
+npm run once
+```
+
+Example Output:
 ```text
 ======================================================
-[Render Workflow: aqi-simulator] Run started at 2026-09-19T07:08:52.144Z
+🌱 EcoRoute Background AQI Simulator Daemon Started
+⚡ Connected to: neo4j+s://0b15a9dc.databases.neo4j.io
+⏱️ Interval: Every 60 seconds
+Press Ctrl+C at any time to gracefully stop.
 ======================================================
-[Render Workflow: aqi-simulator] Mode: 🍃 NORMAL AQI FLUCTUATION
-[Render Workflow: aqi-simulator] 📍 Chandni Chowk: AQI 176 ➔ 243 ✅ [MODERATE]
-[Render Workflow: aqi-simulator] 📍 Rohini: AQI 218 ➔ 207 ✅ [MODERATE]
-[Render Workflow: aqi-simulator] Completed successfully. Updated 2 neighborhood(s).
+
+------------------------------------------------------
+[AQI Workflow] Iteration at 1:09:31 pm (2026-09-19T07:39:30.253Z)
+[AQI Workflow] Status: 🍃 NORMAL AQI FLUCTUATION
+  📍 Greater Kailash      AQI 119 ➔ 169 ✅ [MODERATE]
+[AQI Workflow] Successfully committed to Neo4j AuraDB.
+------------------------------------------------------
 ```
 
 ---
 
-## Deployment on Render
+## Option 2: 100% Free Cloud Automation (GitHub Actions)
 
-### Option A: Using the Render Dashboard
+A GitHub Actions workflow is provided at [`.github/workflows/aqi-simulator.yml`](../.github/workflows/aqi-simulator.yml) which runs automatically in the cloud on a recurring schedule with zero server costs:
 
-1. **Create a Workflow Service**:
-   - Go to the [Render Dashboard](https://dashboard.render.com/) and click **New +** > **Workflow**.
-   - Connect your GitHub repository (`EcoRoute`).
-   - Set **Root Directory** to `workflows`.
-   - Set **Build Command** to `npm install`.
-   - Set **Start Command** to `npm start`.
-   - Under **Environment Variables**, add:
-     - `NEO4J_URI`: `neo4j+s://<your-instance>.databases.neo4j.io`
-     - `NEO4J_USER`: `0b15a9dc` (or `neo4j`)
-     - `NEO4J_PASSWORD`: `<your-neo4j-password>`
-
-2. **Set up the Recurring Schedule (Every 2 Minutes)**:
-   - In the Render Dashboard, click **New +** > **Cron Job**.
-   - Connect the same repository with **Root Directory** set to `workflows`.
-   - Set **Schedule** to `*/2 * * * *` (runs every 2 minutes).
-   - Set **Build Command** to `npm install`.
-   - Set **Command** to `npm run trigger`.
-   - Add the same `NEO4J_*` environment variables (and optionally `RENDER_API_KEY`).
-
-### Option B: Deploying with `render.yaml` Blueprint
-
-The included [`workflows/render.yaml`](file:///c:/Users/SOUMYA%20SURYAN/Desktop/All%20Projects/IgniteRoom/EcoRoute/workflows/render.yaml) automatically provisions both the workflow service and the recurring cron trigger:
-
-1. In Render Dashboard, click **Blueprints** > **New Blueprint Instance**.
-2. Select the `EcoRoute` repository.
-3. Render will detect the `render.yaml` configuration and prompt for your `NEO4J_URI`, `NEO4J_USER`, and `NEO4J_PASSWORD` environment secrets.
+1. In your GitHub repository (`soumyasuryan/EcoRoute`), go to **Settings** > **Secrets and variables** > **Actions**.
+2. Add three repository secrets:
+   - `NEO4J_URI`: `neo4j+s://0b15a9dc.databases.neo4j.io`
+   - `NEO4J_USER`: `0b15a9dc` (or your Neo4j username)
+   - `NEO4J_PASSWORD`: `<your-neo4j-password>`
+3. The workflow will automatically run every 10 minutes, or you can trigger it on demand anytime under the **Actions** tab by clicking **Run workflow**.
 
 ---
 
-## Confirming it's Running
+## Confirming it's Working
 
-1. **Render Workflow Logs**:
-   - Open your workflow service or cron job in the Render Dashboard.
-   - Click on the **Logs** or **Task Runs** tab. You will see formatted logs displaying each run's timestamp, mode (normal vs spike), and which neighborhoods had their AQI updated.
-
-2. **Neo4j Aura Console Verification**:
-   - Log in to your [Neo4j Aura Console](https://console.neo4j.io) and open the **Query / Neo4j Browser**.
-   - Run the following Cypher query:
-     ```cypher
-     MATCH (n:Neighborhood)
-     RETURN n.name AS Neighborhood, n.aqi AS AQI, ('Warehouse' IN labels(n)) AS isWarehouse
-     ORDER BY n.aqi DESC;
-     ```
-   - Re-run the query every 2 minutes to observe the values continuously updating.
-
+1. **Terminal Logs**: The daemon outputs live before/after values and color-coded status badges for each updated hub.
+2. **Neo4j Aura Console**:
+   Run this Cypher query in the [Neo4j Aura Console](https://console.neo4j.io):
+   ```cypher
+   MATCH (n:Neighborhood)
+   RETURN n.name AS Neighborhood, n.aqi AS AQI, ('Warehouse' IN labels(n)) AS isWarehouse
+   ORDER BY n.aqi DESC;
+   ```
 3. **EcoRoute Dashboard**:
-   - Reload or inspect your EcoRoute web dashboard ([http://localhost:3000](http://localhost:3000)). The color-coded CircleMarkers, winter smog alerts panel, and calculated routes will reflect the background updates automatically!
+   Open [http://localhost:3000](http://localhost:3000). As AQI values change in the background, clicking **Recalculate Route** or refreshing the page will display updated marker colors, smog alert badges, and altered route paths!

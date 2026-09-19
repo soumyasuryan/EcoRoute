@@ -99,6 +99,7 @@ export default function Controls({
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
           {/* Fastest Mode */}
           <label
+            onClick={() => setMode('fastest')}
             className={`flex flex-col p-3 rounded-xl border cursor-pointer transition-all ${
               mode === 'fastest'
                 ? 'bg-blue-950/40 border-blue-500 text-white shadow-md shadow-blue-500/10 ring-1 ring-blue-500'
@@ -123,6 +124,7 @@ export default function Controls({
 
           {/* Eco-Safe Mode */}
           <label
+            onClick={() => setMode('eco-safe')}
             className={`flex flex-col p-3 rounded-xl border cursor-pointer transition-all ${
               mode === 'eco-safe'
                 ? 'bg-emerald-950/40 border-emerald-500 text-white shadow-md shadow-emerald-500/10 ring-1 ring-emerald-500'
@@ -147,6 +149,7 @@ export default function Controls({
 
           {/* Risk-Weighted Mode */}
           <label
+            onClick={() => setMode('risk-weighted')}
             className={`flex flex-col p-3 rounded-xl border cursor-pointer transition-all ${
               mode === 'risk-weighted'
                 ? 'bg-purple-950/40 border-purple-500 text-white shadow-md shadow-purple-500/10 ring-1 ring-purple-500'

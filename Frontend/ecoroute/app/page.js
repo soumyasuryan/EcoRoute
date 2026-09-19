@@ -54,20 +54,25 @@ export default function EcoRouteDashboard() {
     }
   }, []);
 
-  // 2. Compute shortest route
+  // 2. Compute shortest route (stable callback with no re-creation on state change)
   const calculateRoute = useCallback(
-    async (src = source, tgt = target, currentMode = mode, currentAlpha = alpha) => {
-      if (!src || !tgt) return;
+    async (src, tgt, currentMode, currentAlpha) => {
+      const activeSrc = src || source;
+      const activeTgt = tgt || target;
+      const activeMode = currentMode || mode;
+      const activeAlpha = currentAlpha !== undefined ? currentAlpha : alpha;
+
+      if (!activeSrc || !activeTgt) return;
       setLoadingRoute(true);
       try {
         const res = await fetch('/api/route', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            source: src,
-            target: tgt,
-            mode: currentMode,
-            alpha: currentAlpha
+            source: activeSrc,
+            target: activeTgt,
+            mode: activeMode,
+            alpha: activeAlpha
           })
         });
 
@@ -87,12 +92,13 @@ export default function EcoRouteDashboard() {
     [source, target, mode, alpha]
   );
 
-  // Initial load
+  // Initial load runs strictly once on mount
   useEffect(() => {
+    let isMounted = true;
     async function init() {
       setInitialLoading(true);
       const nodes = await fetchNeighborhoods();
-      if (nodes.length > 0) {
+      if (isMounted && nodes.length > 0) {
         const warehouses = nodes.filter((n) => n.isWarehouse);
         const customers = nodes.filter((n) => !n.isWarehouse);
 
@@ -105,12 +111,39 @@ export default function EcoRouteDashboard() {
         // Compute initial fastest route
         await calculateRoute(defaultSource, defaultTarget, 'fastest', 1.0);
       }
-      setInitialLoading(false);
+      if (isMounted) {
+        setInitialLoading(false);
+      }
     }
     init();
-  }, [fetchNeighborhoods, calculateRoute]);
+    return () => {
+      isMounted = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Recalculate route whenever mode or alpha changes
+  // Handlers for reactive auto-recalculation on parameter change
+  const handleSourceChange = (newSource) => {
+    setSource(newSource);
+    calculateRoute(newSource, target, mode, alpha);
+  };
+
+  const handleTargetChange = (newTarget) => {
+    setTarget(newTarget);
+    calculateRoute(source, newTarget, mode, alpha);
+  };
+
+  const handleModeChange = (newMode) => {
+    setMode(newMode);
+    calculateRoute(source, target, newMode, alpha);
+  };
+
+  const handleAlphaChange = (newAlpha) => {
+    setAlpha(newAlpha);
+    calculateRoute(source, target, mode, newAlpha);
+  };
+
+  // Recalculate route manually if requested
   const handleRecalculate = () => {
     calculateRoute(source, target, mode, alpha);
   };
@@ -245,13 +278,13 @@ export default function EcoRouteDashboard() {
               <Controls
                 neighborhoods={neighborhoods}
                 source={source}
-                setSource={setSource}
+                setSource={handleSourceChange}
                 target={target}
-                setTarget={setTarget}
+                setTarget={handleTargetChange}
                 mode={mode}
-                setMode={setMode}
+                setMode={handleModeChange}
                 alpha={alpha}
-                setAlpha={setAlpha}
+                setAlpha={handleAlphaChange}
                 onRecalculate={handleRecalculate}
                 onSpikeTriggered={handleTriggerSpike}
                 loading={loadingRoute}
@@ -300,7 +333,39 @@ export default function EcoRouteDashboard() {
             </div>
 
             {/* Right Column: Map & Performance Metrics (7 cols) */}
-            <div className="lg:col-span-7 flex flex-col gap-6">
+            <div className="lg:col-span-7 flex flex-col gap-4">
+              {/* Alert when Fastest mode routes blindly through a severe AQI smog hotspot */}
+              {mode === 'fastest' &&
+                (currentRoute?.path || [])
+                  .map((name) => neighborhoods.find((n) => n.name === name))
+                  .filter((n) => n && n.aqi > 400 && n.name !== source && n.name !== target).length > 0 && (
+                  <div className="p-3.5 rounded-2xl bg-rose-950/80 border border-rose-500/60 shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-rose-200 animate-pulse">
+                    <div className="flex items-center gap-2.5">
+                      <span className="text-xl">⚠️</span>
+                      <div>
+                        <span className="font-bold text-rose-300 uppercase tracking-wide">Rider Smog Exposure Alert:</span>
+                        <span>
+                          {' '}Fastest mode routes directly through hazardous smog in{' '}
+                          <strong className="text-white underline">
+                            {(currentRoute?.path || [])
+                              .map((name) => neighborhoods.find((n) => n.name === name))
+                              .filter((n) => n && n.aqi > 400 && n.name !== source && n.name !== target)
+                              .map((h) => `${h.name} (AQI ${h.aqi})`)
+                              .join(', ')}
+                          </strong>!
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleModeChange('eco-safe')}
+                      className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold whitespace-nowrap shadow-lg shadow-emerald-950/40 transition-all active:scale-95 text-xs flex items-center gap-1.5"
+                    >
+                      <span>🛡️</span> Reroute via Eco-Safe
+                    </button>
+                  </div>
+                )}
+
               {/* Interactive Map */}
               <div className="h-[480px] w-full">
                 <MapView
