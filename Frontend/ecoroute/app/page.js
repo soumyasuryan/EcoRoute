@@ -154,24 +154,35 @@ export default function EcoRouteDashboard() {
 
   const handleCompareWith = useCallback(
     async (src = source, tgt = target, currentAlpha = alpha, showToastMsg = true) => {
-      if (!src || !tgt) return;
+      const activeSrc = src || source;
+      const activeTgt = tgt || target;
+      if (!activeSrc || !activeTgt) return;
       setLoadingCompare(true);
       try {
         const res = await fetch('/api/compare', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ source: src, target: tgt, alpha: currentAlpha })
+          body: JSON.stringify({
+            source: activeSrc,
+            target: activeTgt,
+            alpha: parseFloat(currentAlpha) || 1.0
+          })
         });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || 'Failed to compare routes');
+        }
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Failed to compare routes');
         setComparisonResult(data);
         await fetchHighRiskNodes();
         if (showToastMsg) {
           showToast('All 3 modes compared', 'border-blue-500');
         }
       } catch (err) {
-        console.error('Compare error:', err);
-        showToast(err.message || 'Comparison failed', 'border-red-500');
+        if (err.name !== 'AbortError') {
+          console.warn('Compare error:', err);
+          showToast(err.message || 'Comparison failed', 'border-red-500');
+        }
       } finally {
         setLoadingCompare(false);
       }
